@@ -74,11 +74,4 @@ public abstract class HandledScreenMixin extends Screen {
         }
         return stack;
     }
-
-    @Inject(method = "drawSlot", at = @At("TAIL"))
-    private void postRenderItem(MatrixStack matrices, Slot slot, CallbackInfo ci) {
-        if (litematicItemRenderer != null) {
-            litematicItemRenderer.drawTransparencyBuffer(matrices, x, y);
-        }
-    }
 }

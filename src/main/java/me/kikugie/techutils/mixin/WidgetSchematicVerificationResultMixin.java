@@ -8,7 +8,6 @@ import fi.dy.masa.malilib.gui.LeftRight;
 import fi.dy.masa.malilib.gui.widgets.WidgetListEntrySortable;
 import fi.dy.masa.malilib.render.InventoryOverlay;
 import fi.dy.masa.malilib.util.GuiUtils;
-import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.inventory.Inventory;
@@ -29,7 +28,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * {@link InventoryOverlay} with MatrixStack (upstream uses 1.20+ DrawContext).
  */
 @Mixin(value = WidgetSchematicVerificationResult.class, remap = false)
-public abstract class WidgetSchematicVerificationResultMixin<InventoryBE extends BlockEntity & Inventory> extends WidgetListEntrySortable<GuiSchematicVerifier.BlockMismatchEntry> {
+public abstract class WidgetSchematicVerificationResultMixin extends WidgetListEntrySortable<GuiSchematicVerifier.BlockMismatchEntry> {
     @Unique
     private static final int SLOT_PITCH = 18;
 
@@ -41,10 +40,9 @@ public abstract class WidgetSchematicVerificationResultMixin<InventoryBE extends
 
     @Inject(method = "postRenderHovered", at = @At("HEAD"), cancellable = true)
     private void techutils$renderInventories(int mouseX, int mouseY, boolean selected, MatrixStack matrixStack, CallbackInfo ci) {
-        //noinspection unchecked
-        Pair<InventoryBE, InventoryBE> inventories = mismatchEntry.blockMismatch == null
+        Pair<Inventory, Inventory> inventories = mismatchEntry.blockMismatch == null
                 ? null
-                : ((BlockMismatchExtension<InventoryBE>) mismatchEntry.blockMismatch).getInventories$techutils();
+                : ((BlockMismatchExtension) mismatchEntry.blockMismatch).getInventories$techutils();
         if (inventories == null) {
             return;
         }

@@ -4,7 +4,6 @@ import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.sugar.Local;
 import me.kikugie.techutils.feature.verifier.BlockMismatchExtension;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.BlockMismatch;
-import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.inventory.Inventory;
 import org.apache.commons.lang3.tuple.Pair;
 import org.jetbrains.annotations.Nullable;
@@ -13,19 +12,19 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 
 @Mixin(value = BlockMismatch.class, remap = false)
-public class BlockMismatchMixin<InventoryBE extends BlockEntity & Inventory> implements BlockMismatchExtension<InventoryBE> {
+public class BlockMismatchMixin implements BlockMismatchExtension {
     @Unique
     @Nullable
-    private Pair<InventoryBE, InventoryBE> inventories;
+    private Pair<Inventory, Inventory> inventories;
 
     @Override
-    public void setInventories$techutils(Pair<InventoryBE, InventoryBE> inventories) {
+    public void setInventories$techutils(Pair<Inventory, Inventory> inventories) {
         this.inventories = inventories;
     }
 
     @Override
     @Nullable
-    public Pair<InventoryBE, InventoryBE> getInventories$techutils() {
+    public Pair<Inventory, Inventory> getInventories$techutils() {
         return inventories;
     }
 

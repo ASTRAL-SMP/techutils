@@ -1,7 +1,6 @@
 package me.kikugie.techutils.mixin;
 
 import com.google.common.collect.ArrayListMultimap;
-import com.google.common.collect.ImmutableMap;
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -10,19 +9,11 @@ import me.kikugie.techutils.config.Configs;
 import me.kikugie.techutils.feature.inverifier.ContainerStorage;
 import me.kikugie.techutils.feature.verifier.BlockMismatchExtension;
 import me.kikugie.techutils.feature.verifier.SchematicVerifierExtension;
-import fi.dy.masa.litematica.schematic.placement.SchematicPlacement;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier;
-import fi.dy.masa.litematica.util.ItemUtils;
 import fi.dy.masa.malilib.util.IntBoundingBox;
-import it.unimi.dsi.fastutil.objects.Reference2ObjectArrayMap;
-import it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet;
 import net.minecraft.block.BlockState;
-import net.minecraft.block.entity.BlockEntity;
-import net.minecraft.client.world.ClientWorld;
 import net.minecraft.inventory.Inventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.state.property.BooleanProperty;
-import net.minecraft.state.property.Property;
+import net.minecraft.inventory.SimpleInventory;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.chunk.Chunk;
 import org.apache.commons.lang3.tuple.Pair;
@@ -37,40 +28,41 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
 import static fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.BlockMismatch;
-import static fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.MismatchRenderPos;
 import static fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.MismatchType;
 
 /**
  * Extends Litematica's Schematic Verifier to also report containers whose contents don't match the
- * schematic. Container contents are compared straight from the client world's block entities, so this
- * works in singleplayer and wherever the client already has the container data (opened containers,
- * NBT queries, Servux).
+ * schematic. The expected contents are read from the stored schematic NBT (Litematica 0.14.7 doesn't
+ * populate the schematic world's block-entity inventories), the found contents come from the client
+ * world block entity, so it's correct in singleplayer and wherever the client has the container data.
  * <p>
- * Ported from the 1.20.1 branch to NBT; the item-component and Servux-bulk-request paths are dropped.
+ * Wrong containers only feed the verifier list (and the side-by-side render); they are not fed into
+ * the in-world mismatch renderer, so there are no stray block markers.
  */
 @Mixin(value = SchematicVerifier.class, remap = false)
-public abstract class SchematicVerifierMixin<InventoryBE extends BlockEntity & Inventory> implements SchematicVerifierExtension {
+public abstract class SchematicVerifierMixin implements SchematicVerifierExtension {
     @Shadow @Final private static BlockPos.Mutable MUTABLE_POS;
-    @Shadow private SchematicPlacement schematicPlacement;
-    @Shadow private ClientWorld worldClient;
-
-    @Shadow protected abstract void addAndSortPositions(MismatchType type, ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> sourceMap, List<BlockPos> listOut, int maxEntries);
 
     @Unique
-    private final Set<Pair<InventoryBE, InventoryBE>> wrongInventories = new ReferenceOpenHashSet<>();
-    @Unique
-    private final ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> wrongInventoriesPositions = ArrayListMultimap.create();
-    @Unique
-    private final List<BlockPos> wrongInventoriesPositionsClosest = new ArrayList<>();
+    private final Set<WrongInventory> wrongInventories = new LinkedHashSet<>();
     @Unique
     private final List<BlockMismatch> selectedInventoryMismatches = new ArrayList<>();
+    // Kept empty on purpose: the render/ignore hooks below hand these back so Litematica never draws
+    // wrong-inventory markers in the world.
+    @Unique
+    private final ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> emptyPositions = ArrayListMultimap.create();
+    @Unique
+    private final List<BlockPos> emptyClosest = new ArrayList<>();
+
+    @Unique
+    private record WrongInventory(BlockPos pos, BlockState state, Inventory expected, Inventory found) {
+    }
 
     @Override
     public List<BlockMismatch> getSelectedInventoryMismatches$techutils() {
@@ -88,55 +80,36 @@ public abstract class SchematicVerifierMixin<InventoryBE extends BlockEntity & I
         if (!(foundBE instanceof Inventory found)) {
             return;
         }
-        // The schematic world's block entities don't carry their inventory in 0.14.7, so read the
-        // expected contents from the stored schematic NBT instead.
-        var expectedBE = ContainerStorage.getSchematicBlockEntity(MUTABLE_POS.toImmutable());
-        if (!(expectedBE instanceof Inventory expected)
-                || expectedBE.getType() != foundBE.getType()
-                || expected.size() != found.size()) {
+        BlockPos pos = MUTABLE_POS.toImmutable();
+        BlockState state = foundBE.getCachedState();
+
+        SimpleInventory expected = ContainerStorage.getSchematicInventory(pos, state);
+        if (expected == null || expected.size() != found.size()) {
             return;
         }
 
         boolean verifyNbt = Configs.LitematicConfigs.VERIFY_ITEM_NBT.getBooleanValue();
-        int size = expected.size();
-        for (int i = size - 1; i >= 0; i--) {
+        boolean mismatch = false;
+        for (int i = expected.size() - 1; i >= 0; i--) {
             var expectedStack = expected.getStack(i);
             var foundStack = found.getStack(i);
             if (expectedStack.getItem() != foundStack.getItem()
                     || expectedStack.getCount() != foundStack.getCount()
                     || verifyNbt && !Objects.equals(expectedStack.getNbt(), foundStack.getNbt())) {
-                var pos = MUTABLE_POS.toImmutable();
-                //noinspection unchecked
-                var pair = snapshot((InventoryBE) expected, (InventoryBE) found);
-                wrongInventories.add(pair);
-                warCrime(pair.getLeft(), pair.getRight(), ItemUtilsAccessor.getItemsForStates(), pos);
+                mismatch = true;
                 break;
             }
         }
-    }
+        if (!mismatch) {
+            return;
+        }
 
-    /**
-     * I ask for your forgiveness, future viewer (this makes differentiating inventories with the same block state possible)
-     */
-    @Unique
-    private void warCrime(InventoryBE expected, InventoryBE found, IdentityHashMap<BlockState, ItemStack> itemsForStates, BlockPos pos) {
-        BlockState foundState = found.getCachedState();
-        HashMap<Property<?>, Comparable<?>> propertyMap = new HashMap<>(foundState.getEntries());
-
-        propertyMap.put(BooleanProperty.of("war_crime"), true);
-        BlockState newState = new BlockState(foundState.getBlock(), ImmutableMap.copyOf(new Reference2ObjectArrayMap<>(propertyMap)), null);
-
-        itemsForStates.put(newState, ItemUtils.getItemForBlock(worldClient, pos, foundState, true));
-        wrongInventoriesPositions.put(Pair.of(expected.getCachedState(), newState), pos);
-        found.setCachedState(newState);
-    }
-
-    @SuppressWarnings("unchecked")
-    @Unique
-    private Pair<InventoryBE, InventoryBE> snapshot(InventoryBE expected, InventoryBE found) {
-        final var expectedNew = (InventoryBE) BlockEntity.createFromNbt(expected.getPos(), expected.getCachedState(), expected.createNbtWithIdentifyingData());
-        final var foundNew = (InventoryBE) BlockEntity.createFromNbt(found.getPos(), found.getCachedState(), found.createNbtWithIdentifyingData());
-        return Pair.of(expectedNew, foundNew);
+        // Snapshot the found contents so later changes to the container don't alter the displayed diff.
+        SimpleInventory foundSnapshot = new SimpleInventory(found.size());
+        for (int i = 0; i < found.size(); i++) {
+            foundSnapshot.setStack(i, found.getStack(i).copy());
+        }
+        wrongInventories.add(new WrongInventory(pos, state, expected, foundSnapshot));
     }
 
     @Inject(method = "addCountFor", at = @At("HEAD"), cancellable = true)
@@ -144,16 +117,18 @@ public abstract class SchematicVerifierMixin<InventoryBE extends BlockEntity & I
         if (mismatchType != WRONG_INVENTORIES) {
             return;
         }
-
-        for (var pair : wrongInventories) {
-            BlockState leftState = pair.getLeft().getCachedState();
-            BlockState rightState = pair.getRight().getCachedState();
-            BlockMismatch blockMismatch = new BlockMismatch(WRONG_INVENTORIES, leftState, rightState, 1);
-            //noinspection unchecked
-            ((BlockMismatchExtension<InventoryBE>) blockMismatch).setInventories$techutils(pair);
+        for (WrongInventory entry : wrongInventories) {
+            BlockMismatch blockMismatch = new BlockMismatch(WRONG_INVENTORIES, entry.state(), entry.state(), 1);
+            ((BlockMismatchExtension) blockMismatch).setInventories$techutils(Pair.of(entry.expected(), entry.found()));
             list.add(blockMismatch);
         }
         ci.cancel();
+    }
+
+    @WrapOperation(method = "getMismatchOverviewCombined", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;addCountFor(Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier$MismatchType;Lcom/google/common/collect/ArrayListMultimap;Ljava/util/List;)V", ordinal = 0))
+    private void addWrongInventoriesToOverview(SchematicVerifier instance, MismatchType type, ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> positions, List<BlockMismatch> list, Operation<Void> original) {
+        original.call(instance, WRONG_INVENTORIES, emptyPositions, list);
+        original.call(instance, type, positions, list);
     }
 
     @Inject(method = "toggleMismatchEntrySelected", at = @At(value = "INVOKE", target = "Lcom/google/common/collect/HashMultimap;remove(Ljava/lang/Object;Ljava/lang/Object;)Z"))
@@ -177,41 +152,27 @@ public abstract class SchematicVerifierMixin<InventoryBE extends BlockEntity & I
         }
     }
 
-    @WrapOperation(method = "getMismatchOverviewCombined", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;addCountFor(Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier$MismatchType;Lcom/google/common/collect/ArrayListMultimap;Ljava/util/List;)V", ordinal = 0))
-    private void addWrongInventoriesToOverview(SchematicVerifier instance, MismatchType type, ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> positions, List<BlockMismatch> list, Operation<Void> original) {
-        original.call(instance, WRONG_INVENTORIES, wrongInventoriesPositions, list);
-        original.call(instance, type, positions, list);
-    }
-
-    @Inject(method = "updateClosestPositions", at = @At("TAIL"))
-    private void updateClosestWrongInventoriesPositions(BlockPos centerPos, int maxEntries, CallbackInfo ci) {
-        addAndSortPositions(WRONG_INVENTORIES, wrongInventoriesPositions, wrongInventoriesPositionsClosest, maxEntries);
-    }
-
-    @WrapOperation(method = "combineClosestPositions", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;getMismatchRenderPositionFor(Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier$MismatchType;Ljava/util/List;)V", ordinal = 0))
-    private void combineWrongInventoriesPositions(SchematicVerifier instance, MismatchType type, List<MismatchRenderPos> tempList, Operation<Void> original) {
-        original.call(instance, WRONG_INVENTORIES, tempList);
-        original.call(instance, type, tempList);
-    }
-
     @Inject(method = "getMapForMismatchType", at = @At("HEAD"), cancellable = true)
     private void addWrongInventoriesMap(MismatchType mismatchType, CallbackInfoReturnable<ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos>> cir) {
         if (mismatchType == WRONG_INVENTORIES) {
-            cir.setReturnValue(wrongInventoriesPositions);
+            cir.setReturnValue(emptyPositions);
         }
     }
 
     @Inject(method = "getClosestMismatchedPositionsFor", at = @At("HEAD"), cancellable = true)
     private void addWrongInventoriesMismatchedPositions(MismatchType type, CallbackInfoReturnable<List<BlockPos>> cir) {
         if (type == WRONG_INVENTORIES) {
-            cir.setReturnValue(wrongInventoriesPositionsClosest);
+            cir.setReturnValue(emptyClosest);
         }
     }
 
     @ModifyExpressionValue(method = "ignoreStateMismatch(Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier$BlockMismatch;Z)V", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;getMapForMismatchType(Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier$MismatchType;)Lcom/google/common/collect/ArrayListMultimap;"))
     private ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> removeInventoryIfNecessary(ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> positions, @Local(argsOnly = true) BlockMismatch mismatch) {
-        if (positions == wrongInventoriesPositions) {
-            wrongInventories.remove(((BlockMismatchExtension<?>) mismatch).getInventories$techutils());
+        if (positions == emptyPositions) {
+            var inventories = ((BlockMismatchExtension) mismatch).getInventories$techutils();
+            if (inventories != null) {
+                wrongInventories.removeIf(w -> w.expected() == inventories.getLeft() && w.found() == inventories.getRight());
+            }
             selectedInventoryMismatches.remove(mismatch);
         }
         return positions;
@@ -219,12 +180,7 @@ public abstract class SchematicVerifierMixin<InventoryBE extends BlockEntity & I
 
     @Inject(method = "clearData", at = @At("HEAD"))
     private void clearAdditionalData(CallbackInfo ci) {
-        var itemsForStates = ItemUtilsAccessor.getItemsForStates();
-        for (Pair<BlockState, BlockState> pair : wrongInventoriesPositions.keySet()) {
-            itemsForStates.remove(pair.getRight());
-        }
         wrongInventories.clear();
-        wrongInventoriesPositions.clear();
         selectedInventoryMismatches.clear();
     }
 }
