@@ -14,6 +14,7 @@ import fi.dy.masa.malilib.util.IntBoundingBox;
 import net.minecraft.block.BlockState;
 import net.minecraft.inventory.Inventory;
 import net.minecraft.inventory.SimpleInventory;
+import net.minecraft.item.ItemStack;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.chunk.Chunk;
 import org.apache.commons.lang3.tuple.Pair;
@@ -83,14 +84,23 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
         BlockPos pos = MUTABLE_POS.toImmutable();
         BlockState state = foundBE.getCachedState();
 
-        SimpleInventory expected = ContainerStorage.getSchematicInventory(pos, state);
-        if (expected == null || expected.size() != found.size()) {
+        // The stored schematic items only reach up to the last non-empty slot, so pad them out to the
+        // real container size before comparing (otherwise the sizes never line up and nothing matches).
+        ItemStack[] schematicItems = ContainerStorage.getSchematicSlotItems(pos);
+        if (schematicItems == null) {
             return;
+        }
+        int size = found.size();
+        SimpleInventory expected = new SimpleInventory(size);
+        for (int i = 0; i < Math.min(schematicItems.length, size); i++) {
+            if (schematicItems[i] != null) {
+                expected.setStack(i, schematicItems[i].copy());
+            }
         }
 
         boolean verifyNbt = Configs.LitematicConfigs.VERIFY_ITEM_NBT.getBooleanValue();
         boolean mismatch = false;
-        for (int i = expected.size() - 1; i >= 0; i--) {
+        for (int i = size - 1; i >= 0; i--) {
             var expectedStack = expected.getStack(i);
             var foundStack = found.getStack(i);
             if (expectedStack.getItem() != foundStack.getItem()
@@ -105,8 +115,8 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
         }
 
         // Snapshot the found contents so later changes to the container don't alter the displayed diff.
-        SimpleInventory foundSnapshot = new SimpleInventory(found.size());
-        for (int i = 0; i < found.size(); i++) {
+        SimpleInventory foundSnapshot = new SimpleInventory(size);
+        for (int i = 0; i < size; i++) {
             foundSnapshot.setStack(i, found.getStack(i).copy());
         }
         wrongInventories.add(new WrongInventory(pos, state, expected, foundSnapshot));

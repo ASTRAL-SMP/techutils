@@ -29,6 +29,17 @@ public class ContainerStorage {
         this.placement = placement;
     }
 
+    /**
+     * The schematic's stored items for a single container block position (one array slot per
+     * container slot, {@code null} for empty slots), or {@code null} if there's no schematic
+     * container there. Unlike {@link #getSchematicInventory} this does not merge double chests, so it
+     * lines up slot-for-slot with the world block entity at the same position.
+     */
+    @Nullable
+    public static ItemStack[] getSchematicSlotItems(BlockPos pos) {
+        return getItemsInternal(pos);
+    }
+
     @Nullable
     public static SimpleInventory getSchematicInventory(BlockPos pos, BlockState state) {
         ItemStack[] items = (state.getBlock() instanceof ChestBlock) ? getChestItems(pos, state) : getItemsInternal(pos);
