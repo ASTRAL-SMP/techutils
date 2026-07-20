@@ -18,6 +18,9 @@
     ],
     "modmenu": [
       "me.kikugie.techutils.config.ModMenuIntegration"
+    ],
+    "mm:early_risers": [
+      "me.kikugie.techutils.EarlyRiser"
     ]
   },
   "mixins": [

@@ -122,6 +122,8 @@ public class Configs implements IConfigHandler {
         public static final ConfigBooleanHotkeyed EASY_PLACE_FULL_BLOCKS = new ConfigBooleanHotkeyed("easyPlaceFullBlocks", false, "", """
                 Treat all blocks as full cubes when using Litematica's easy place feature.
                 Useful for placing blocks with small hitboxes like buttons, chains, fences, etc.""");
+        public static final ConfigBoolean VERIFY_ITEM_NBT = new ConfigBoolean("verifyItemNbt", false,
+                "Make the inventory verifier require exact item NBT matches, not just item type and count");
         public static final ConfigHotkey VALIDATE_NBT = new ConfigHotkey("validateNbt", "", "");
         public static final ConfigHotkey CLEAR_OVERLAY = new ConfigHotkey("clearOverlay", "", "");
         public static final ConfigBoolean VALIDATE_NBT_ONLY_SAME = new ConfigBoolean("validateNbtOnlySameBlock", true, "Nbt validator will process a block if its placed as in schematic");
@@ -140,7 +142,8 @@ public class Configs implements IConfigHandler {
                     MIRROR_PLACEMENT,
                     INVENTORY_SCREEN_OVERLAY,
                     REFRESH_MATERIAL_LIST,
-                    EASY_PLACE_FULL_BLOCKS
+                    EASY_PLACE_FULL_BLOCKS,
+                    VERIFY_ITEM_NBT
 
 //                    VALIDATE_NBT,
 //                    CLEAR_OVERLAY,

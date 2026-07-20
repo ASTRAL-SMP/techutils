@@ -45,6 +45,8 @@ To access mod config open [Mod Menu](https://modrinth.com/mod/modmenu) and selec
 - Disable WorldEdit neighbor updates on log-in - `autoDisableUpdates`.
 - Hotkeys for litematic placement rotation & mirror - `rotatePlacement` and `mirrorPlacement`
 - `/isorender selection` shortcut for rendering current Litematica selection in [Isometric Renders](https://modrinth.com/mod/isometric-renders)
+- Inventory Verifier addon to Litematica's Schematic Verifier - adds a **Wrong Inventories** category that lists every container whose contents don't match the schematic and shows the expected vs found inventory side by side. Turn on `verifyItemNbt` to also require item NBT to match.
+  *This compares the container contents the client already has, so it works in singleplayer, on opened containers, and wherever NBT is available (query permissions / Servux).*
 - A hotkey to give yourself a container full of the item you're holding - `giveFullInv`. Supports shulker boxes, chests, and bundles. Nesting them is possible.
 - A hotkey to refresh the material list - `refreshMaterialList`.
 - Make easy place act as if all blocks are full blocks - `easyPlaceFullBlocks`. Useful for placing blocks with small hit boxes.
