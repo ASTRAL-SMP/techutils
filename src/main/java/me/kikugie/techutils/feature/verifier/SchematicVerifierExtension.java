@@ -16,4 +16,10 @@ public interface SchematicVerifierExtension {
     List<SchematicVerifier.BlockMismatch> getSelectedInventoryMismatches$techutils();
 
     int getWrongInventoriesCount$techutils();
+
+    /**
+     * On a server, queries the real contents of the schematic containers seen during verification
+     * and records the ones that don't match. No-op in singleplayer.
+     */
+    void runQueryPass$techutils();
 }

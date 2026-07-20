@@ -9,10 +9,13 @@ import com.llamalad7.mixinextras.sugar.Local;
 import me.kikugie.techutils.config.Configs;
 import me.kikugie.techutils.feature.verifier.BlockMismatchExtension;
 import me.kikugie.techutils.feature.verifier.SchematicVerifierExtension;
+import me.kikugie.techutils.networking.GamerQueryHandler;
+import fi.dy.masa.litematica.gui.GuiSchematicVerifier;
 import fi.dy.masa.litematica.schematic.placement.SchematicPlacement;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier;
 import fi.dy.masa.litematica.util.ItemUtils;
 import fi.dy.masa.malilib.util.IntBoundingBox;
+import net.minecraft.client.MinecraftClient;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectArrayMap;
 import it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet;
 import net.minecraft.block.BlockState;
@@ -39,8 +42,10 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import static fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.BlockMismatch;
 import static fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.MismatchRenderPos;
@@ -81,37 +86,108 @@ public abstract class SchematicVerifierMixin<InventoryBE extends BlockEntity & I
         return wrongInventories.size();
     }
 
+    @Unique
+    private final Map<BlockPos, InventoryBE> pendingExpected = new HashMap<>();
+
     @Inject(method = "verifyChunk", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;checkBlockStates(IIILnet/minecraft/block/BlockState;Lnet/minecraft/block/BlockState;)V", remap = true))
     private void checkInventories(Chunk chunkClient, Chunk chunkSchematic, IntBoundingBox box, CallbackInfoReturnable<Boolean> cir) {
         var expectedBE = chunkSchematic.getBlockEntity(MUTABLE_POS);
-        var foundBE = chunkClient.getBlockEntity(MUTABLE_POS);
-        if (!(expectedBE instanceof Inventory expected && foundBE instanceof Inventory found)
-                || expectedBE.getType() != foundBE.getType()) {
+        if (!(expectedBE instanceof Inventory expected)) {
             return;
         }
+        var pos = MUTABLE_POS.toImmutable();
 
+        if (MinecraftClient.getInstance().isInSingleplayer()) {
+            // The client has the authoritative container contents, so compare straight away.
+            var foundBE = chunkClient.getBlockEntity(pos);
+            if (foundBE instanceof Inventory found && expectedBE.getType() == foundBE.getType()) {
+                //noinspection unchecked
+                compareAndRecord(pos, (InventoryBE) expected, (InventoryBE) found);
+            }
+        } else {
+            // On a server the client doesn't have container contents; snapshot the schematic side
+            // and query the real contents from the server after verification completes.
+            //noinspection unchecked
+            pendingExpected.put(pos, snapshotOne((InventoryBE) expected));
+        }
+    }
+
+    /**
+     * Queries the server for the real contents of every schematic container found during
+     * verification and records the ones that don't match. Runs on multiplayer only (in singleplayer
+     * {@link #pendingExpected} is empty because contents are compared inline). Requires the block
+     * NBT query permission (op / a permissions mod) or Servux on the server.
+     */
+    @Override
+    public void runQueryPass$techutils() {
+        if (pendingExpected.isEmpty()) {
+            return;
+        }
+        MinecraftClient mc = MinecraftClient.getInstance();
+        int queryTimeout = Configs.LitematicConfigs.QUERY_TIMEOUT.getIntegerValue();
+        var positions = pendingExpected.keySet().toArray(new BlockPos[0]);
+        pendingExpected.keySet().retainAll(java.util.Arrays.asList(positions));
+
+        for (BlockPos pos : positions) {
+            InventoryBE expected = pendingExpected.get(pos);
+            if (expected == null) {
+                continue;
+            }
+            GamerQueryHandler.queryBlocks(new BlockPos[]{pos})
+                    .orTimeout(queryTimeout, TimeUnit.SECONDS)
+                    .whenComplete((map, error) -> mc.execute(() -> {
+                        if (map == null) {
+                            return;
+                        }
+                        var nbt = map.get(pos);
+                        var world = mc.world;
+                        if (nbt == null || world == null) {
+                            return;
+                        }
+                        BlockEntity foundBE = BlockEntity.createFromNbt(pos, world.getBlockState(pos), nbt);
+                        if (!(foundBE instanceof Inventory)) {
+                            return;
+                        }
+                        //noinspection unchecked
+                        if (compareAndRecord(pos, expected, (InventoryBE) foundBE)
+                                && mc.currentScreen instanceof GuiSchematicVerifier gui) {
+                            gui.initGui();
+                        }
+                    }));
+        }
+    }
+
+    @Unique
+    private boolean compareAndRecord(BlockPos pos, InventoryBE expected, InventoryBE found) {
         int size = expected.size();
         if (size != found.size()) {
-            return;
+            return false;
         }
-
-        var itemsForStates = ItemUtilsAccessor.getItemsForStates();
         boolean verifyNbt = Configs.LitematicConfigs.VERIFY_ITEM_NBT.getBooleanValue();
+        boolean mismatch = false;
         for (int i = size - 1; i >= 0; i--) {
             var expectedStack = expected.getStack(i);
             var foundStack = found.getStack(i);
-
             if (expectedStack.getItem() != foundStack.getItem()
                     || expectedStack.getCount() != foundStack.getCount()
                     || verifyNbt && !Objects.equals(expectedStack.getNbt(), foundStack.getNbt())) {
-                var pos = MUTABLE_POS.toImmutable();
-                //noinspection unchecked
-                var pair = snapshot((InventoryBE) expected, (InventoryBE) found);
-                wrongInventories.add(pair);
-                warCrime(pair.getLeft(), pair.getRight(), itemsForStates, pos);
+                mismatch = true;
                 break;
             }
         }
+        if (!mismatch) {
+            return false;
+        }
+        var pair = snapshot(expected, found);
+        wrongInventories.add(pair);
+        warCrime(pair.getLeft(), pair.getRight(), ItemUtilsAccessor.getItemsForStates(), pos);
+        return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    @Unique
+    private InventoryBE snapshotOne(InventoryBE be) {
+        return (InventoryBE) BlockEntity.createFromNbt(be.getPos(), be.getCachedState(), be.createNbtWithIdentifyingData());
     }
 
     /**
@@ -225,5 +301,6 @@ public abstract class SchematicVerifierMixin<InventoryBE extends BlockEntity & I
         wrongInventories.clear();
         wrongInventoriesPositions.clear();
         selectedInventoryMismatches.clear();
+        pendingExpected.clear();
     }
 }

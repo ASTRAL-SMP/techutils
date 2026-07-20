@@ -143,14 +143,14 @@ public class Configs implements IConfigHandler {
                     INVENTORY_SCREEN_OVERLAY,
                     REFRESH_MATERIAL_LIST,
                     EASY_PLACE_FULL_BLOCKS,
-                    VERIFY_ITEM_NBT
+                    VERIFY_ITEM_NBT,
+                    PACKET_RATE,
+                    PACKET_TIMEOUT,
+                    QUERY_TIMEOUT
 
 //                    VALIDATE_NBT,
 //                    CLEAR_OVERLAY,
-//                    VALIDATE_NBT_ONLY_SAME,
-//                    PACKET_RATE,
-//                    PACKET_TIMEOUT,
-//                    QUERY_TIMEOUT
+//                    VALIDATE_NBT_ONLY_SAME
             ));
         }
     }
