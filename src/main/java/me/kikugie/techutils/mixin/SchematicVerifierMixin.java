@@ -7,6 +7,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
 import me.kikugie.techutils.config.Configs;
+import me.kikugie.techutils.feature.inverifier.ContainerStorage;
 import me.kikugie.techutils.feature.verifier.BlockMismatchExtension;
 import me.kikugie.techutils.feature.verifier.SchematicVerifierExtension;
 import fi.dy.masa.litematica.schematic.placement.SchematicPlacement;
@@ -83,9 +84,14 @@ public abstract class SchematicVerifierMixin<InventoryBE extends BlockEntity & I
 
     @Inject(method = "verifyChunk", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;checkBlockStates(IIILnet/minecraft/block/BlockState;Lnet/minecraft/block/BlockState;)V", remap = true))
     private void checkInventories(Chunk chunkClient, Chunk chunkSchematic, IntBoundingBox box, CallbackInfoReturnable<Boolean> cir) {
-        var expectedBE = chunkSchematic.getBlockEntity(MUTABLE_POS);
         var foundBE = chunkClient.getBlockEntity(MUTABLE_POS);
-        if (!(expectedBE instanceof Inventory expected && foundBE instanceof Inventory found)
+        if (!(foundBE instanceof Inventory found)) {
+            return;
+        }
+        // The schematic world's block entities don't carry their inventory in 0.14.7, so read the
+        // expected contents from the stored schematic NBT instead.
+        var expectedBE = ContainerStorage.getSchematicBlockEntity(MUTABLE_POS.toImmutable());
+        if (!(expectedBE instanceof Inventory expected)
                 || expectedBE.getType() != foundBE.getType()
                 || expected.size() != found.size()) {
             return;

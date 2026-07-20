@@ -35,6 +35,32 @@ public class ContainerStorage {
         return items == null ? null : new SimpleInventory(items);
     }
 
+    /**
+     * Builds the schematic's container block entity (contents included) for a world position.
+     * <p>
+     * Litematica 0.14.7 doesn't populate the inventory of block entities returned by the schematic
+     * world's {@code getBlockEntity}, so the schematic contents have to be read from the stored NBT.
+     */
+    @Nullable
+    public static net.minecraft.block.entity.BlockEntity getSchematicBlockEntity(BlockPos worldPos) {
+        PosInPlacement placement = getPlacementBlock(worldPos);
+        if (placement == null)
+            return null;
+
+        Map<BlockPos, NbtCompound> beMap = placement.placement().getSchematic().getBlockEntityMapForRegion(placement.region());
+        if (beMap == null)
+            return null;
+        NbtCompound beNbt = beMap.get(placement.pos());
+        if (beNbt == null)
+            return null;
+
+        LitematicaBlockStateContainer container = placement.placement().getSchematic().getSubRegionContainer(placement.region());
+        if (container == null)
+            return null;
+        BlockState state = container.get(placement.pos().getX(), placement.pos().getY(), placement.pos().getZ());
+        return net.minecraft.block.entity.BlockEntity.createFromNbt(worldPos, state, beNbt);
+    }
+
     @Nullable
     private static ItemStack[] getChestItems(BlockPos pos, BlockState state) {
         if (state == null || !(state.getBlock() instanceof ChestBlock)) return null;
