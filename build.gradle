@@ -35,7 +35,8 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fapi_version}"
 
-	modImplementation "com.terraformersmc:modmenu:${project.modmenu_version}"
+	// Sourced from the Modrinth CDN maven for reliable CI resolution (the TerraformersMC maven is flaky on runners)
+	modImplementation "maven.modrinth:modmenu:${project.modmenu_version}"
 
 	modImplementation "fi.dy.masa.malilib:malilib-fabric-${project.malilib_version}"
 	modImplementation "maven.modrinth:litematica:${project.litematica_version}"
