@@ -9,14 +9,20 @@ import me.kikugie.techutils.config.Configs;
 import me.kikugie.techutils.feature.inverifier.ContainerStorage;
 import me.kikugie.techutils.feature.verifier.BlockMismatchExtension;
 import me.kikugie.techutils.feature.verifier.SchematicVerifierExtension;
+import me.kikugie.techutils.networking.GamerQueryHandler;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier;
 import fi.dy.masa.malilib.util.IntBoundingBox;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.entity.BlockEntity;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.inventory.Inventory;
 import net.minecraft.inventory.SimpleInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NbtCompound;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.chunk.WorldChunk;
 import org.apache.commons.lang3.tuple.Pair;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -29,10 +35,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import static fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.BlockMismatch;
 import static fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.MismatchType;
@@ -61,8 +71,68 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
     @Unique
     private final List<BlockPos> emptyClosest = new ArrayList<>();
 
+    // On a server the client's container block entities are empty, so we query the real contents with
+    // rate-limited block-NBT queries (op-less if the server enables carpet-tis-addition's
+    // debugNbtQueryNoPermission). Verification of a chunk is held back until its containers answer.
+    @Unique
+    private final Map<BlockPos, NbtCompound> foundNbtCache = new HashMap<>();
+    @Unique
+    private final Set<BlockPos> pendingQueries = new HashSet<>();
+    @Unique
+    private final Set<ChunkPos> queriedChunks = new HashSet<>();
+
     @Unique
     private record WrongInventory(BlockPos pos, BlockState state, Inventory expected, Inventory found) {
+    }
+
+    @ModifyExpressionValue(method = "verifyChunks", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/world/ChunkManagerSchematic;isChunkLoaded(II)Z", remap = true))
+    private boolean techutils$ensureContainersQueried(boolean isLoaded, @Local ChunkPos pos) {
+        return isLoaded && techutils$chunkContainersReady(pos);
+    }
+
+    /**
+     * Fires block-NBT queries for the containers in a chunk and reports whether their answers are in
+     * yet. On singleplayer (or when the queries can't be answered) it never blocks.
+     */
+    @Unique
+    private boolean techutils$chunkContainersReady(ChunkPos chunkPos) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.isInSingleplayer() || mc.world == null) {
+            return true;
+        }
+
+        if (queriedChunks.add(chunkPos)) {
+            WorldChunk chunk = mc.world.getChunk(chunkPos.x, chunkPos.z);
+            for (BlockPos bePos : new ArrayList<>(chunk.getBlockEntityPositions())) {
+                if (chunk.getBlockEntity(bePos) instanceof Inventory && !foundNbtCache.containsKey(bePos)) {
+                    techutils$queryContainer(bePos.toImmutable());
+                }
+            }
+        }
+
+        for (BlockPos pending : pendingQueries) {
+            if (pending.getX() >> 4 == chunkPos.x && pending.getZ() >> 4 == chunkPos.z) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    @Unique
+    private void techutils$queryContainer(BlockPos pos) {
+        if (!pendingQueries.add(pos)) {
+            return;
+        }
+        int timeout = Configs.LitematicConfigs.QUERY_TIMEOUT.getIntegerValue();
+        GamerQueryHandler.queryBlocks(new BlockPos[]{pos})
+                .orTimeout(timeout, TimeUnit.SECONDS)
+                .whenComplete((map, error) -> MinecraftClient.getInstance().execute(() -> {
+                    pendingQueries.remove(pos);
+                    NbtCompound nbt = map == null ? null : map.get(pos);
+                    if (nbt != null) {
+                        foundNbtCache.put(pos, nbt);
+                    }
+                }));
     }
 
     @Override
@@ -77,12 +147,26 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
 
     @Inject(method = "verifyChunk", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;checkBlockStates(IIILnet/minecraft/block/BlockState;Lnet/minecraft/block/BlockState;)V", remap = true))
     private void checkInventories(Chunk chunkClient, Chunk chunkSchematic, IntBoundingBox box, CallbackInfoReturnable<Boolean> cir) {
-        var foundBE = chunkClient.getBlockEntity(MUTABLE_POS);
-        if (!(foundBE instanceof Inventory found)) {
+        var worldBE = chunkClient.getBlockEntity(MUTABLE_POS);
+        if (!(worldBE instanceof Inventory)) {
             return;
         }
         BlockPos pos = MUTABLE_POS.toImmutable();
-        BlockState state = foundBE.getCachedState();
+        BlockState state = worldBE.getCachedState();
+
+        Inventory found;
+        if (MinecraftClient.getInstance().isInSingleplayer()) {
+            // The client is authoritative in singleplayer.
+            found = (Inventory) worldBE;
+        } else {
+            // On a server the world block entity is empty; use the queried contents (may be absent if
+            // the query was denied or timed out, in which case we don't flag the container).
+            NbtCompound nbt = foundNbtCache.get(pos);
+            if (nbt == null || !(BlockEntity.createFromNbt(pos, state, nbt) instanceof Inventory queried)) {
+                return;
+            }
+            found = queried;
+        }
 
         // The stored schematic items only reach up to the last non-empty slot, so pad them out to the
         // real container size before comparing (otherwise the sizes never line up and nothing matches).
@@ -192,5 +276,8 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
     private void clearAdditionalData(CallbackInfo ci) {
         wrongInventories.clear();
         selectedInventoryMismatches.clear();
+        foundNbtCache.clear();
+        pendingQueries.clear();
+        queriedChunks.clear();
     }
 }
