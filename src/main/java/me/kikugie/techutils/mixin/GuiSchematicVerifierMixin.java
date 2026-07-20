@@ -28,7 +28,6 @@ import java.lang.reflect.Method;
 @Mixin(value = GuiSchematicVerifier.class, remap = false)
 public abstract class GuiSchematicVerifierMixin {
     @Shadow private static SchematicVerifier.MismatchType resultMode;
-    @Shadow @Final private SchematicVerifier verifier;
 
     @Unique
     private static final Enum<?> SET_RESULT_MODE_WRONG_INVENTORIES;
@@ -78,11 +77,6 @@ public abstract class GuiSchematicVerifierMixin {
             enabled.set(resultMode != SchematicVerifierExtension.WRONG_INVENTORIES);
         }
         return ordinal;
-    }
-
-    @Inject(method = "onTaskCompleted", at = @At("HEAD"))
-    private void techutils$runQueryPass(CallbackInfo ci) {
-        ((SchematicVerifierExtension) verifier).runQueryPass$techutils();
     }
 
     @Mixin(targets = "fi.dy.masa.litematica.gui.GuiSchematicVerifier$ButtonListener", remap = false)
