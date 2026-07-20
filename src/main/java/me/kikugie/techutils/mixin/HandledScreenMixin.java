@@ -5,9 +5,7 @@ import me.kikugie.techutils.render.gui.LitematicInventoryRenderer;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
-import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.text.Text;
 import org.jetbrains.annotations.Nullable;
@@ -27,22 +25,36 @@ public abstract class HandledScreenMixin extends Screen {
 
     private Slot renderSlot;
     @Nullable
+    private VerifierRecorder.Entry litematicEntry = null;
+    @Nullable
     private LitematicInventoryRenderer litematicItemRenderer = null;
 
     protected HandledScreenMixin(Text title) {
         super(title);
     }
 
-    @Inject(method = "<init>", at = @At("TAIL"))
-    private void initLitematicInventory(ScreenHandler handler, PlayerInventory inventory, Text title, CallbackInfo ci) {
-        if (!me.kikugie.techutils.config.Configs.LitematicConfigs.INVENTORY_SCREEN_OVERLAY.getBooleanValue()) return;
-
+    /**
+     * Resolves the renderer lazily each frame: on a server the container contents arrive in a
+     * separate packet after the screen is already open, so the active recorder entry (and its
+     * schematic inventory) may only appear a few ticks later.
+     */
+    @Nullable
+    private LitematicInventoryRenderer techutils$renderer() {
+        if (!me.kikugie.techutils.config.Configs.LitematicConfigs.INVENTORY_SCREEN_OVERLAY.getBooleanValue()) {
+            return null;
+        }
         VerifierRecorder.Entry entry = VerifierRecorder.getActive();
-        if (entry != null && entry.schematicInv != null) {
+        if (entry == null || entry.schematicInv == null) {
+            litematicEntry = null;
+            litematicItemRenderer = null;
+            return null;
+        }
+        if (entry != litematicEntry || litematicItemRenderer == null) {
+            litematicEntry = entry;
             litematicItemRenderer = new LitematicInventoryRenderer(entry.schematicInv);
         }
+        return litematicItemRenderer;
     }
-
 
     @Inject(method = "close", at = @At("TAIL"))
     private void resetRecorder(CallbackInfo ci) {
@@ -56,8 +68,9 @@ public abstract class HandledScreenMixin extends Screen {
 
     @ModifyVariable(method = "drawSlot", at = @At(value = "STORE", target = "Lnet/minecraft/screen/slot/Slot;getStack()Lnet/minecraft/item/ItemStack;"))
     private ItemStack renderItem(ItemStack stack, MatrixStack matrices) {
-        if (litematicItemRenderer != null) {
-            return litematicItemRenderer.drawStack(matrices, x, y, renderSlot, stack);
+        LitematicInventoryRenderer renderer = techutils$renderer();
+        if (renderer != null) {
+            return renderer.drawStack(matrices, x, y, renderSlot, stack);
         }
         return stack;
     }
