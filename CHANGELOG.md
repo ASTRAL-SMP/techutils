@@ -1,13 +1,15 @@
-# Big changes for a small mod!  
+# 0.3.0-astral.1 (1.19.4)
 
-## New  
-- Rebranded from "TMC Utils" to "Technical Utilities"
-- Render 3D litematic preview
-- Hotkeys for schematic placement rotation
-- Compact scoreboard
+ASTRAL-SMP fork bringing the mod to Minecraft 1.19.4 and backporting features from the upstream 0.6.x line that don't rely on the 1.20.5+ data component system.
 
-## Fixes
-- WorldEdit utilities now work with CUI mod installed
+## Toolchain
+- Retargeted from 1.19.3 to **1.19.4** (Yarn 1.19.4+build.2, Loader 0.16.10, Gradle 8.10.2, Loom 1.7.4).
+- Dependencies: Fabric API 0.87.2, MaliLib 0.15.4, Litematica 0.14.7, Mod Menu 6.3.1.
 
-## Internal changes
-- (Almost) complete mod rewrite (I asked)
+## Backported features
+- **giveFullInv** — hotkey to give yourself a container full of the held item. Supports shulker boxes, chests and bundles; hold a container in the off-hand to pick the outer container or nest them. Reimplemented on NBT (`bundleFill`, `fillSafety` options).
+- **refreshMaterialList** — hotkey to refresh the active Litematica material list.
+- **easyPlaceFullBlocks** — make Litematica easy place treat all blocks as full cubes, for placing small-hitbox blocks like buttons, chains and fences.
+
+## Not backported
+Item component verification (`verifyItemComponents`) and item predicates depend on the 1.20.5+ data component system, which does not exist in 1.19.4.

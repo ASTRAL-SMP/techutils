@@ -116,6 +116,12 @@ public class Configs implements IConfigHandler {
                 - Orange: mismatched amount or nbt data;
                 - Magenta: extra item that shouldn't be present;
                 - Red: wrong item type.""");
+        public static final ConfigHotkey REFRESH_MATERIAL_LIST = new ConfigHotkey("refreshMaterialList", "", """
+                Refreshes active Litematica material list.
+                This can be used in combination with layered lists to update the HUD when changing the active layer.""");
+        public static final ConfigBooleanHotkeyed EASY_PLACE_FULL_BLOCKS = new ConfigBooleanHotkeyed("easyPlaceFullBlocks", false, "", """
+                Treat all blocks as full cubes when using Litematica's easy place feature.
+                Useful for placing blocks with small hitboxes like buttons, chains, fences, etc.""");
         public static final ConfigHotkey VALIDATE_NBT = new ConfigHotkey("validateNbt", "", "");
         public static final ConfigHotkey CLEAR_OVERLAY = new ConfigHotkey("clearOverlay", "", "");
         public static final ConfigBoolean VALIDATE_NBT_ONLY_SAME = new ConfigBoolean("validateNbtOnlySameBlock", true, "Nbt validator will process a block if its placed as in schematic");
@@ -132,7 +138,9 @@ public class Configs implements IConfigHandler {
                     RENDER_SLANT,
                     ROTATE_PLACEMENT,
                     MIRROR_PLACEMENT,
-                    INVENTORY_SCREEN_OVERLAY
+                    INVENTORY_SCREEN_OVERLAY,
+                    REFRESH_MATERIAL_LIST,
+                    EASY_PLACE_FULL_BLOCKS
 
 //                    VALIDATE_NBT,
 //                    CLEAR_OVERLAY,
@@ -164,11 +172,19 @@ public class Configs implements IConfigHandler {
         public static final ConfigHotkey OPEN_CONFIG = new ConfigHotkey("openConfig", "U, C", "Opens this screen if none other is open");
         public static final ConfigBooleanHotkeyed COMPACT_SCOREBOARD = new ConfigBooleanHotkeyed("compactScoreboard", false, "F6", "Show scoreboard values in compact notation.\n" +
                 "For example: 123456 -> 123.4K");
+        public static final ConfigHotkey GIVE_FULL_INV = new ConfigHotkey("giveFullInv", "", """
+                Give yourself a container full of the item you're holding (creative only).
+                Supports shulker boxes, chests and bundles. Hold a container in the off-hand to choose the outer container type, or nest containers.""");
+        public static final ConfigInteger BUNDLE_FILL = new ConfigInteger("bundleFill", 1, 1, 100, true, "How many stacks of the held item to put into a bundle when filling one");
+        public static final ConfigBoolean FILL_SAFETY = new ConfigBoolean("fillSafety", true, "Prevent giveFullInv from nesting containers that already hold items (avoids accidental item duplication)");
 
         public MiscConfigs() {
             super(ImmutableList.of(
                     OPEN_CONFIG,
-                    COMPACT_SCOREBOARD
+                    COMPACT_SCOREBOARD,
+                    GIVE_FULL_INV,
+                    BUNDLE_FILL,
+                    FILL_SAFETY
             ));
         }
     }

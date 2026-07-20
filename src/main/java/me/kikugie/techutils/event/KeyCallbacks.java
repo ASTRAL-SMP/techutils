@@ -6,6 +6,7 @@ import fi.dy.masa.malilib.hotkeys.IKeybind;
 import fi.dy.masa.malilib.hotkeys.KeyAction;
 import me.kikugie.techutils.config.Configs;
 import me.kikugie.techutils.config.InGameNotifier;
+import me.kikugie.techutils.feature.GiveFullInv;
 import me.kikugie.techutils.render.gui.ConfigGui;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.BlockMirror;
@@ -16,7 +17,31 @@ public class KeyCallbacks {
     public static void init() {
         Configs.LitematicConfigs.ROTATE_PLACEMENT.getKeybind().setCallback(new RotatePlacementCallback());
         Configs.LitematicConfigs.MIRROR_PLACEMENT.getKeybind().setCallback(new MirrorPlacementCallback());
+        Configs.LitematicConfigs.REFRESH_MATERIAL_LIST.getKeybind().setCallback(new RefreshMaterialListCallback());
         Configs.MiscConfigs.OPEN_CONFIG.getKeybind().setCallback(new OpenConfig());
+        Configs.MiscConfigs.GIVE_FULL_INV.getKeybind().setCallback(new GiveFullInvCallback());
+    }
+
+    private static class RefreshMaterialListCallback implements IHotkeyCallback {
+        @Override
+        public boolean onKeyAction(KeyAction action, IKeybind key) {
+            if (key != Configs.LitematicConfigs.REFRESH_MATERIAL_LIST.getKeybind())
+                return false;
+            var materialList = DataManager.getMaterialList();
+            if (materialList == null)
+                return false;
+            materialList.reCreateMaterialList();
+            return true;
+        }
+    }
+
+    private static class GiveFullInvCallback implements IHotkeyCallback {
+        @Override
+        public boolean onKeyAction(KeyAction action, IKeybind key) {
+            if (key != Configs.MiscConfigs.GIVE_FULL_INV.getKeybind())
+                return false;
+            return GiveFullInv.onKeybind();
+        }
     }
 
     private static class OpenConfig implements IHotkeyCallback {

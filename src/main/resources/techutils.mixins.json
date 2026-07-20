@@ -17,7 +17,8 @@
     "LitematicaGuiSchematicManagerMixin",
     "LitematicaWidgetSchematicBrowserMixin",
     "MessageHandlerMixin",
-    "MinecraftClientMixin"
+    "MinecraftClientMixin",
+    "RayTraceUtilsMixin"
   ],
   "injectors": {
     "defaultRequire": 1

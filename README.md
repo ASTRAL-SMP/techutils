@@ -1,6 +1,8 @@
-# Technical Utilities
+# Technical Utilities (ASTRAL-SMP 1.19.4 fork)
 
 Tech Utils is a mod providing client-side tweaks for [Litematica](https://www.curseforge.com/minecraft/mc-mods/litematica), [WorldEdit](https://www.curseforge.com/minecraft/mc-mods/worldedit) and other small utilities.
+
+This is an [ASTRAL-SMP](https://github.com/ASTRAL-SMP) fork of [VelizarBG/techutils](https://github.com/VelizarBG/techutils) that brings the mod to **Minecraft 1.19.4** and backports the newer features that don't rely on the 1.20.5+ data component system. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Mod config
 To access mod config open [Mod Menu](https://modrinth.com/mod/modmenu) and select this mod.
@@ -43,6 +45,9 @@ To access mod config open [Mod Menu](https://modrinth.com/mod/modmenu) and selec
 - Disable WorldEdit neighbor updates on log-in - `autoDisableUpdates`.
 - Hotkeys for litematic placement rotation & mirror - `rotatePlacement` and `mirrorPlacement`
 - `/isorender selection` shortcut for rendering current Litematica selection in [Isometric Renders](https://modrinth.com/mod/isometric-renders)
+- A hotkey to give yourself a container full of the item you're holding - `giveFullInv`. Supports shulker boxes, chests, and bundles. Nesting them is possible.
+- A hotkey to refresh the material list - `refreshMaterialList`.
+- Make easy place act as if all blocks are full blocks - `easyPlaceFullBlocks`. Useful for placing blocks with small hit boxes.
 - *And more to come!*
 
 ## Dependencies

@@ -7,5 +7,11 @@
   "techutils.feedback.wesync.success": "§oWorldEdit synced!",
   "techutils.feedback.givebox.notcreative": "§cNot in creative mode!",
 
+  "techutils.feature.givefullinv.not_creative_enough": "You must be in creative mode to use this",
+  "techutils.feature.givefullinv.no_item": "Hold an item to fill a container with",
+  "techutils.feature.givefullinv.nested_stack": "That item already holds contents (disable fillSafety to nest it)",
+  "techutils.feature.givefullinv.nested_box": "Refusing to nest shulker boxes (disable fillSafety to allow it)",
+
+
   "litematica.info.schematic_manager.preview.right_click_to_cancel": "- Right click the button to cancel a pending preview operation;\n- Ctrl + click to select a preview image."
 }
