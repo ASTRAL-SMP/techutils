@@ -6,6 +6,7 @@ import me.kikugie.techutils.access.DrawableHelperAccessor;
 import net.minecraft.client.gui.DrawableHelper;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.inventory.CraftingResultInventory;
 import net.minecraft.inventory.Inventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.screen.slot.Slot;
@@ -21,10 +22,16 @@ public class LitematicInventoryRenderer extends DrawableHelper {
         this.inventory = inventory;
     }
 
-    public ItemStack drawStack(MatrixStack matrices, int x, int y, Slot slot, ItemStack stack) {
-        if (slot.inventory instanceof PlayerInventory) return stack;
+    public ItemStack drawStack(MatrixStack matrices, Slot slot, ItemStack stack) {
+        if (slot.inventory instanceof PlayerInventory || slot.inventory instanceof CraftingResultInventory) {
+            return stack;
+        }
+        int index = slot.getIndex();
+        if (index < 0 || index >= inventory.size()) {
+            return stack;
+        }
 
-        ItemStack schematicStack = inventory.getStack(slot.getIndex());
+        ItemStack schematicStack = inventory.getStack(index);
         if (schematicStack == null) {
             schematicStack = ItemStack.EMPTY;
         }

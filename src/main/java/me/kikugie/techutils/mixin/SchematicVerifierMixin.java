@@ -1,29 +1,37 @@
 package me.kikugie.techutils.mixin;
 
 import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.ImmutableMap;
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.llamalad7.mixinextras.sugar.Local;
+import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier;
+import fi.dy.masa.litematica.util.ItemUtils;
+import fi.dy.masa.malilib.gui.Message;
+import fi.dy.masa.malilib.util.InfoUtils;
+import fi.dy.masa.malilib.util.IntBoundingBox;
+import fi.dy.masa.malilib.util.WorldUtils;
 import me.kikugie.techutils.config.Configs;
 import me.kikugie.techutils.feature.inverifier.ContainerStorage;
 import me.kikugie.techutils.feature.verifier.BlockMismatchExtension;
 import me.kikugie.techutils.feature.verifier.SchematicVerifierExtension;
 import me.kikugie.techutils.networking.GamerQueryHandler;
-import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier;
-import fi.dy.masa.malilib.util.IntBoundingBox;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.inventory.Inventory;
 import net.minecraft.inventory.SimpleInventory;
-import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
+import net.minecraft.world.World;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.WorldChunk;
 import org.apache.commons.lang3.tuple.Pair;
+import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -37,7 +45,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -50,39 +58,65 @@ import static fi.dy.masa.litematica.schematic.verifier.SchematicVerifier.Mismatc
 /**
  * Extends Litematica's Schematic Verifier to also report containers whose contents don't match the
  * schematic. The expected contents are read from the stored schematic NBT (Litematica 0.14.7 doesn't
- * populate the schematic world's block-entity inventories), the found contents come from the client
- * world block entity, so it's correct in singleplayer and wherever the client has the container data.
+ * populate the schematic world's block-entity inventories); the found contents come from the client
+ * world in singleplayer, and from block-NBT queries on a server.
  * <p>
- * Wrong containers only feed the verifier list (and the side-by-side render); they are not fed into
- * the in-world mismatch renderer, so there are no stray block markers.
+ * Every wrong container gets its own throwaway {@link BlockState} for the "found" side. Litematica
+ * groups verifier entries and their in-world marker positions by the (expected, found) state pair and
+ * {@code BlockState} compares by identity, so this is what keeps containers of the same block type
+ * from collapsing into a single entry with no usable positions.
  */
 @Mixin(value = SchematicVerifier.class, remap = false)
 public abstract class SchematicVerifierMixin implements SchematicVerifierExtension {
     @Shadow @Final private static BlockPos.Mutable MUTABLE_POS;
+    @Shadow private ClientWorld worldClient;
+    @Shadow private fi.dy.masa.litematica.schematic.placement.SchematicPlacement schematicPlacement;
+
+    @Shadow protected abstract void addAndSortPositions(MismatchType type, ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> sourceMap, List<BlockPos> listOut, int maxEntries);
 
     @Unique
-    private final Set<WrongInventory> wrongInventories = new LinkedHashSet<>();
+    private final Map<BlockPos, WrongInventory> wrongInventories = new LinkedHashMap<>();
     @Unique
     private final List<BlockMismatch> selectedInventoryMismatches = new ArrayList<>();
-    // Kept empty on purpose: the render/ignore hooks below hand these back so Litematica never draws
-    // wrong-inventory markers in the world.
     @Unique
-    private final ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> emptyPositions = ArrayListMultimap.create();
+    private final ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> wrongInventoriesPositions = ArrayListMultimap.create();
     @Unique
-    private final List<BlockPos> emptyClosest = new ArrayList<>();
+    private final List<BlockPos> wrongInventoriesPositionsClosest = new ArrayList<>();
 
-    // On a server the client's container block entities are empty, so we query the real contents with
-    // rate-limited block-NBT queries (op-less if the server enables carpet-tis-addition's
-    // debugNbtQueryNoPermission). Verification of a chunk is held back until its containers answer.
+    // The client's container block entities are always empty (chunk packets don't include container
+    // contents), so the real contents are fetched per chunk before it is verified: on an integrated
+    // server by snapshotting the server world's block entities on the server thread (World#getBlockEntity
+    // returns null from any other thread), on a remote server with rate-limited block-NBT queries
+    // (op-less if the server enables carpet-tis-addition's debugNbtQueryNoPermission). Verification of
+    // a chunk is held back until its containers answer.
     @Unique
     private final Map<BlockPos, NbtCompound> foundNbtCache = new HashMap<>();
     @Unique
     private final Set<BlockPos> pendingQueries = new HashSet<>();
     @Unique
     private final Set<ChunkPos> queriedChunks = new HashSet<>();
+    // Set once a query times out without the server ever answering one, so a server that denies NBT
+    // queries costs one timeout instead of stalling every chunk.
+    @Unique
+    private boolean queriesUnsupported = false;
+    @Unique
+    private boolean queryAnswered = false;
 
     @Unique
-    private record WrongInventory(BlockPos pos, BlockState state, Inventory expected, Inventory found) {
+    private record WrongInventory(BlockPos pos, BlockState expectedState, BlockState foundState,
+                                  Inventory expected, Inventory found) {
+    }
+
+    /**
+     * The integrated server's world when there is one, which is the only local source of real
+     * container contents. {@code null} on a remote server, where they have to be queried instead.
+     */
+    @Unique
+    @Nullable
+    private static World techutils$authoritativeWorld() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        World world = WorldUtils.getBestWorld(mc);
+        return world != null && world != mc.world ? world : null;
     }
 
     @ModifyExpressionValue(method = "verifyChunks", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/world/ChunkManagerSchematic;isChunkLoaded(II)Z", remap = true))
@@ -91,21 +125,29 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
     }
 
     /**
-     * Fires block-NBT queries for the containers in a chunk and reports whether their answers are in
-     * yet. On singleplayer (or when the queries can't be answered) it never blocks.
+     * Fetches the real contents of the containers in a chunk and reports whether they are in yet.
+     * Once a remote server has shown it won't answer queries, it never blocks.
      */
     @Unique
     private boolean techutils$chunkContainersReady(ChunkPos chunkPos) {
         MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.isInSingleplayer() || mc.world == null) {
+        if (queriesUnsupported || mc.world == null) {
             return true;
         }
 
         if (queriedChunks.add(chunkPos)) {
             WorldChunk chunk = mc.world.getChunk(chunkPos.x, chunkPos.z);
+            List<BlockPos> containers = new ArrayList<>();
             for (BlockPos bePos : new ArrayList<>(chunk.getBlockEntityPositions())) {
                 if (chunk.getBlockEntity(bePos) instanceof Inventory && !foundNbtCache.containsKey(bePos)) {
-                    techutils$queryContainer(bePos.toImmutable());
+                    containers.add(bePos.toImmutable());
+                }
+            }
+            if (techutils$authoritativeWorld() instanceof ServerWorld serverWorld) {
+                techutils$snapshotContainers(serverWorld, containers);
+            } else {
+                for (BlockPos pos : containers) {
+                    techutils$queryContainer(pos);
                 }
             }
         }
@@ -116,6 +158,35 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
             }
         }
         return true;
+    }
+
+    /**
+     * Reads the containers' NBT out of the integrated server's world on the server thread, the only
+     * thread {@link World#getBlockEntity} answers for it.
+     */
+    @Unique
+    private void techutils$snapshotContainers(ServerWorld world, List<BlockPos> positions) {
+        if (positions.isEmpty()) {
+            return;
+        }
+        pendingQueries.addAll(positions);
+        world.getServer().execute(() -> {
+            Map<BlockPos, NbtCompound> snapshot = new HashMap<>();
+            for (BlockPos pos : positions) {
+                if (world.getBlockEntity(pos) instanceof Inventory inventory) {
+                    snapshot.put(pos, ((BlockEntity) inventory).createNbtWithId());
+                }
+            }
+            MinecraftClient.getInstance().execute(() -> {
+                for (BlockPos pos : positions) {
+                    pendingQueries.remove(pos);
+                    NbtCompound nbt = snapshot.get(pos);
+                    if (nbt != null) {
+                        foundNbtCache.put(pos, nbt);
+                    }
+                }
+            });
+        });
     }
 
     @Unique
@@ -130,7 +201,13 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
                     pendingQueries.remove(pos);
                     NbtCompound nbt = map == null ? null : map.get(pos);
                     if (nbt != null) {
+                        queryAnswered = true;
                         foundNbtCache.put(pos, nbt);
+                    } else if (!queryAnswered) {
+                        queriesUnsupported = true;
+                        pendingQueries.clear();
+                        InfoUtils.showGuiOrInGameMessage(Message.MessageType.WARNING,
+                                "Tech Utils: the server didn't answer block NBT queries, container contents were not verified (needs op, or carpet-tis-addition's debugNbtQueryNoPermission)");
                     }
                 }));
     }
@@ -154,37 +231,38 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
         BlockPos pos = MUTABLE_POS.toImmutable();
         BlockState state = worldBE.getCachedState();
 
-        Inventory found;
-        if (MinecraftClient.getInstance().isInSingleplayer()) {
-            // The client is authoritative in singleplayer.
-            found = (Inventory) worldBE;
-        } else {
-            // On a server the world block entity is empty; use the queried contents (may be absent if
-            // the query was denied or timed out, in which case we don't flag the container).
-            NbtCompound nbt = foundNbtCache.get(pos);
-            if (nbt == null || !(BlockEntity.createFromNbt(pos, state, nbt) instanceof Inventory queried)) {
-                return;
-            }
-            found = queried;
-        }
-
-        // The stored schematic items only reach up to the last non-empty slot, so pad them out to the
-        // real container size before comparing (otherwise the sizes never line up and nothing matches).
-        ItemStack[] schematicItems = ContainerStorage.getSchematicSlotItems(pos);
-        if (schematicItems == null) {
+        // Client-side container block entities never carry their contents (chunk packets send them
+        // through toInitialChunkDataNbt, which is empty for containers), so the real contents always
+        // come from the per-chunk NBT cache filled before this chunk was verified. An absent entry
+        // means the snapshot/query failed, an empty one that the server answered without a block
+        // entity; the container isn't flagged in either case. The block entity is instantiated from
+        // the client one's own type because vanilla's query responses carry no "id" tag, which rules
+        // out BlockEntity.createFromNbt.
+        NbtCompound nbt = foundNbtCache.get(pos);
+        if (nbt == null || nbt.isEmpty()) {
             return;
         }
-        int size = found.size();
-        SimpleInventory expected = new SimpleInventory(size);
-        for (int i = 0; i < Math.min(schematicItems.length, size); i++) {
-            if (schematicItems[i] != null) {
-                expected.setStack(i, schematicItems[i].copy());
-            }
+        BlockEntity queriedBE = worldBE.getType().instantiate(pos, state);
+        if (queriedBE == null) {
+            return;
+        }
+        try {
+            queriedBE.readNbt(nbt);
+        } catch (Exception e) {
+            return;
+        }
+        if (!(queriedBE instanceof Inventory found)) {
+            return;
+        }
+
+        SimpleInventory expected = ContainerStorage.getSchematicSlotItems(pos, state, schematicPlacement);
+        if (expected == null || expected.size() != found.size()) {
+            return;
         }
 
         boolean verifyNbt = Configs.LitematicConfigs.VERIFY_ITEM_NBT.getBooleanValue();
         boolean mismatch = false;
-        for (int i = size - 1; i >= 0; i--) {
+        for (int i = found.size() - 1; i >= 0; i--) {
             var expectedStack = expected.getStack(i);
             var foundStack = found.getStack(i);
             if (expectedStack.getItem() != foundStack.getItem()
@@ -195,15 +273,41 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
             }
         }
         if (!mismatch) {
+            techutils$forget(pos);
             return;
         }
 
         // Snapshot the found contents so later changes to the container don't alter the displayed diff.
-        SimpleInventory foundSnapshot = new SimpleInventory(size);
-        for (int i = 0; i < size; i++) {
+        SimpleInventory foundSnapshot = new SimpleInventory(found.size());
+        for (int i = 0; i < found.size(); i++) {
             foundSnapshot.setStack(i, found.getStack(i).copy());
         }
-        wrongInventories.add(new WrongInventory(pos, state, expected, foundSnapshot));
+
+        techutils$forget(pos);
+        BlockState foundState = techutils$distinctState(state);
+        ItemUtilsAccessor.getItemsForStates().put(foundState, ItemUtils.getItemForBlock(worldClient, pos, state, true));
+        wrongInventoriesPositions.put(Pair.of(state, foundState), pos);
+        wrongInventories.put(pos, new WrongInventory(pos, state, foundState, expected, foundSnapshot));
+    }
+
+    /**
+     * A {@link BlockState} equal to the given one in every property but not identical to it, which is
+     * all that's needed to tell two mismatched containers of the same block apart.
+     */
+    @Unique
+    private static BlockState techutils$distinctState(BlockState state) {
+        return new BlockState(state.getBlock(), ImmutableMap.copyOf(state.getEntries()), null);
+    }
+
+    @Unique
+    private void techutils$forget(BlockPos pos) {
+        WrongInventory previous = wrongInventories.remove(pos);
+        if (previous == null) {
+            return;
+        }
+        wrongInventoriesPositions.remove(Pair.of(previous.expectedState(), previous.foundState()), pos);
+        ItemUtilsAccessor.getItemsForStates().remove(previous.foundState());
+        selectedInventoryMismatches.removeIf(m -> m.stateFound == previous.foundState());
     }
 
     @Inject(method = "addCountFor", at = @At("HEAD"), cancellable = true)
@@ -211,8 +315,8 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
         if (mismatchType != WRONG_INVENTORIES) {
             return;
         }
-        for (WrongInventory entry : wrongInventories) {
-            BlockMismatch blockMismatch = new BlockMismatch(WRONG_INVENTORIES, entry.state(), entry.state(), 1);
+        for (WrongInventory entry : wrongInventories.values()) {
+            BlockMismatch blockMismatch = new BlockMismatch(WRONG_INVENTORIES, entry.expectedState(), entry.foundState(), 1);
             ((BlockMismatchExtension) blockMismatch).setInventories$techutils(Pair.of(entry.expected(), entry.found()));
             list.add(blockMismatch);
         }
@@ -221,8 +325,19 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
 
     @WrapOperation(method = "getMismatchOverviewCombined", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;addCountFor(Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier$MismatchType;Lcom/google/common/collect/ArrayListMultimap;Ljava/util/List;)V", ordinal = 0))
     private void addWrongInventoriesToOverview(SchematicVerifier instance, MismatchType type, ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> positions, List<BlockMismatch> list, Operation<Void> original) {
-        original.call(instance, WRONG_INVENTORIES, emptyPositions, list);
+        original.call(instance, WRONG_INVENTORIES, wrongInventoriesPositions, list);
         original.call(instance, type, positions, list);
+    }
+
+    @Inject(method = "updateClosestPositions", at = @At("TAIL"))
+    private void updateClosestWrongInventoryPositions(BlockPos centerPos, int maxEntries, CallbackInfo ci) {
+        addAndSortPositions(WRONG_INVENTORIES, wrongInventoriesPositions, wrongInventoriesPositionsClosest, maxEntries);
+    }
+
+    @WrapOperation(method = "combineClosestPositions", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;getMismatchRenderPositionFor(Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier$MismatchType;Ljava/util/List;)V", ordinal = 0))
+    private void combineWrongInventoryPositions(SchematicVerifier instance, MismatchType type, List<SchematicVerifier.MismatchRenderPos> tempList, Operation<Void> original) {
+        original.call(instance, WRONG_INVENTORIES, tempList);
+        original.call(instance, type, tempList);
     }
 
     @Inject(method = "toggleMismatchEntrySelected", at = @At(value = "INVOKE", target = "Lcom/google/common/collect/HashMultimap;remove(Ljava/lang/Object;Ljava/lang/Object;)Z"))
@@ -249,35 +364,42 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
     @Inject(method = "getMapForMismatchType", at = @At("HEAD"), cancellable = true)
     private void addWrongInventoriesMap(MismatchType mismatchType, CallbackInfoReturnable<ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos>> cir) {
         if (mismatchType == WRONG_INVENTORIES) {
-            cir.setReturnValue(emptyPositions);
+            cir.setReturnValue(wrongInventoriesPositions);
         }
     }
 
     @Inject(method = "getClosestMismatchedPositionsFor", at = @At("HEAD"), cancellable = true)
     private void addWrongInventoriesMismatchedPositions(MismatchType type, CallbackInfoReturnable<List<BlockPos>> cir) {
         if (type == WRONG_INVENTORIES) {
-            cir.setReturnValue(emptyClosest);
+            cir.setReturnValue(wrongInventoriesPositionsClosest);
         }
     }
 
     @ModifyExpressionValue(method = "ignoreStateMismatch(Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier$BlockMismatch;Z)V", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier;getMapForMismatchType(Lfi/dy/masa/litematica/schematic/verifier/SchematicVerifier$MismatchType;)Lcom/google/common/collect/ArrayListMultimap;"))
     private ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> removeInventoryIfNecessary(ArrayListMultimap<Pair<BlockState, BlockState>, BlockPos> positions, @Local(argsOnly = true) BlockMismatch mismatch) {
-        if (positions == emptyPositions) {
-            var inventories = ((BlockMismatchExtension) mismatch).getInventories$techutils();
-            if (inventories != null) {
-                wrongInventories.removeIf(w -> w.expected() == inventories.getLeft() && w.found() == inventories.getRight());
-            }
-            selectedInventoryMismatches.remove(mismatch);
+        if (positions == wrongInventoriesPositions) {
+            wrongInventories.values().stream()
+                    .filter(entry -> entry.foundState() == mismatch.stateFound)
+                    .findFirst()
+                    .ifPresent(entry -> techutils$forget(entry.pos()));
         }
         return positions;
     }
 
     @Inject(method = "clearData", at = @At("HEAD"))
     private void clearAdditionalData(CallbackInfo ci) {
+        var itemsForStates = ItemUtilsAccessor.getItemsForStates();
+        for (WrongInventory entry : wrongInventories.values()) {
+            itemsForStates.remove(entry.foundState());
+        }
         wrongInventories.clear();
+        wrongInventoriesPositions.clear();
+        wrongInventoriesPositionsClosest.clear();
         selectedInventoryMismatches.clear();
         foundNbtCache.clear();
         pendingQueries.clear();
         queriedChunks.clear();
+        queriesUnsupported = false;
+        queryAnswered = false;
     }
 }

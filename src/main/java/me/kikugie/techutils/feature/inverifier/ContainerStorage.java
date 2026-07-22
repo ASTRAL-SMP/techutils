@@ -4,152 +4,171 @@ import fi.dy.masa.litematica.data.DataManager;
 import fi.dy.masa.litematica.schematic.container.LitematicaBlockStateContainer;
 import fi.dy.masa.litematica.schematic.placement.SchematicPlacement;
 import fi.dy.masa.litematica.schematic.placement.SchematicPlacementManager;
+import fi.dy.masa.litematica.schematic.placement.SubRegionPlacement;
 import fi.dy.masa.litematica.util.SchematicUtils;
-import it.unimi.dsi.fastutil.ints.Int2ObjectArrayMap;
+import net.minecraft.block.BlockEntityProvider;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.ChestBlock;
+import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.enums.ChestType;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.world.ClientWorld;
+import net.minecraft.inventory.Inventory;
 import net.minecraft.inventory.SimpleInventory;
-import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
-import net.minecraft.nbt.NbtElement;
-import net.minecraft.nbt.NbtList;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Vec3i;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 
-public class ContainerStorage {
-    private static final ItemStack[] NO_ITEMS = new ItemStack[0];
-    private static final Map<SchematicPlacement, ContainerStorage> placements = new WeakHashMap<>();
-    private final SchematicPlacement placement;
-    private final Map<BlockPos, int[]> containerCache = new HashMap<>();
-
-    public ContainerStorage(SchematicPlacement placement) {
-        this.placement = placement;
+/**
+ * Reads container contents out of a placed schematic.
+ * <p>
+ * Litematica 0.14.7 leaves the inventories of the block entities its schematic world hands out empty,
+ * so the contents are rebuilt from the stored region NBT instead.
+ */
+public final class ContainerStorage {
+    private ContainerStorage() {
     }
 
     /**
-     * The schematic's stored items for a single container block position (one array slot per
-     * container slot, {@code null} for empty slots), or {@code null} if there's no schematic
-     * container there. Unlike {@link #getSchematicInventory} this does not merge double chests, so it
-     * lines up slot-for-slot with the world block entity at the same position.
+     * The schematic's contents for the container at a world position, sized like the real container so
+     * slot indices line up. Double chests are not merged, so this matches the block entity at that
+     * exact position.
      */
     @Nullable
-    public static ItemStack[] getSchematicSlotItems(BlockPos pos) {
-        return getItemsInternal(pos);
-    }
-
-    @Nullable
-    public static SimpleInventory getSchematicInventory(BlockPos pos, BlockState state) {
-        ItemStack[] items = (state.getBlock() instanceof ChestBlock) ? getChestItems(pos, state) : getItemsInternal(pos);
-        return items == null ? null : new SimpleInventory(items);
+    public static SimpleInventory getSchematicSlotItems(BlockPos worldPos, BlockState worldState) {
+        return getItems(worldPos, worldState, null);
     }
 
     /**
-     * Builds the schematic's container block entity (contents included) for a world position.
-     * <p>
-     * Litematica 0.14.7 doesn't populate the inventory of block entities returned by the schematic
-     * world's {@code getBlockEntity}, so the schematic contents have to be read from the stored NBT.
+     * Same as {@link #getSchematicSlotItems(BlockPos, BlockState)}, but only considers the given
+     * placement. The verifier uses this so overlapping placements can't feed it another placement's
+     * containers.
      */
     @Nullable
-    public static net.minecraft.block.entity.BlockEntity getSchematicBlockEntity(BlockPos worldPos) {
-        PosInPlacement placement = getPlacementBlock(worldPos);
-        if (placement == null)
-            return null;
-
-        Map<BlockPos, NbtCompound> beMap = placement.placement().getSchematic().getBlockEntityMapForRegion(placement.region());
-        if (beMap == null)
-            return null;
-        NbtCompound beNbt = beMap.get(placement.pos());
-        if (beNbt == null)
-            return null;
-
-        LitematicaBlockStateContainer container = placement.placement().getSchematic().getSubRegionContainer(placement.region());
-        if (container == null)
-            return null;
-        BlockState state = container.get(placement.pos().getX(), placement.pos().getY(), placement.pos().getZ());
-        return net.minecraft.block.entity.BlockEntity.createFromNbt(worldPos, state, beNbt);
+    public static SimpleInventory getSchematicSlotItems(BlockPos worldPos, BlockState worldState,
+                                                        @Nullable SchematicPlacement only) {
+        return getItems(worldPos, worldState, only);
     }
 
+    /**
+     * Same as {@link #getSchematicSlotItems}, but merges the halves of a double chest into the 54-slot
+     * inventory the container screen shows.
+     */
     @Nullable
-    private static ItemStack[] getChestItems(BlockPos pos, BlockState state) {
-        if (state == null || !(state.getBlock() instanceof ChestBlock)) return null;
-        ChestType type = state.get(ChestBlock.CHEST_TYPE);
-        ItemStack[] items1 = getItemsInternal(pos);
-        if (type == ChestType.SINGLE) return items1;
-
-        BlockPos pos2 = pos.add(ChestBlock.getFacing(state).getVector());
-        ItemStack[] items2 = getItemsInternal(pos2);
-        if (items1 == null || items2 == null) return null;
-
-        ItemStack[] items = new ItemStack[54];
-        switch (type) {
-            case LEFT -> {
-                System.arraycopy(items1, 0, items, 0, items1.length);
-                System.arraycopy(items2, 0, items, 27, items2.length);
-            }
-            case RIGHT -> {
-                System.arraycopy(items2, 0, items, 0, items2.length);
-                System.arraycopy(items1, 0, items, 27, items1.length);
-            }
+    public static SimpleInventory getSchematicInventory(BlockPos worldPos, BlockState worldState) {
+        ChestType type = worldState.getBlock() instanceof ChestBlock
+                ? worldState.get(ChestBlock.CHEST_TYPE)
+                : ChestType.SINGLE;
+        if (type == ChestType.SINGLE) {
+            return getItems(worldPos, worldState, null);
         }
-        return items;
+
+        ClientWorld world = MinecraftClient.getInstance().world;
+        if (world == null) {
+            return null;
+        }
+        BlockPos otherPos = worldPos.offset(ChestBlock.getFacing(worldState));
+        SimpleInventory clicked = getItems(worldPos, worldState, null);
+        SimpleInventory other = getItems(otherPos, world.getBlockState(otherPos), null);
+        if (clicked == null && other == null) {
+            return null;
+        }
+        // A half that isn't in the schematic still has to occupy its 27 slots, otherwise the other
+        // half's items line up against the wrong screen slots.
+        if (clicked == null) clicked = new SimpleInventory(27);
+        if (other == null) other = new SimpleInventory(27);
+
+        // ChestType.RIGHT is the first half of the vanilla DoubleInventory, LEFT is the second.
+        return type == ChestType.RIGHT ? merge(clicked, other) : merge(other, clicked);
     }
 
-    @Nullable
-    private static ItemStack[] getItemsInternal(BlockPos pos) {
-        PosInPlacement placement = getPlacementBlock(pos);
-        if (placement == null) return null;
-
-        NbtCompound nbt = Objects.requireNonNull(placement.placement.getSchematic()
-                        .getBlockEntityMapForRegion(placement.region))
-                .get(placement.pos);
-        if (nbt == null) return null;
-        NbtList schematicItems = nbt.getList("Items", NbtElement.COMPOUND_TYPE);
-        if (schematicItems == null) return NO_ITEMS;
-
-        Int2ObjectArrayMap<ItemStack> items = new Int2ObjectArrayMap<>();
-        int maxSlot = 0;
-
-        for (int i = 0; i < schematicItems.size(); i++) {
-            NbtCompound item = schematicItems.getCompound(i);
-            int slot = item.getByte("Slot");
-            maxSlot = Math.max(maxSlot, slot);
-            items.put(slot, ItemStack.fromNbt(item));
+    private static SimpleInventory merge(Inventory first, Inventory second) {
+        SimpleInventory merged = new SimpleInventory(first.size() + second.size());
+        for (int i = 0; i < first.size(); i++) {
+            merged.setStack(i, first.getStack(i));
         }
-
-        ItemStack[] returnItems = new ItemStack[maxSlot + 1];
-        for (int i = 0; i < returnItems.length; i++) {
-            returnItems[i] = items.get(i);
+        for (int i = 0; i < second.size(); i++) {
+            merged.setStack(first.size() + i, second.getStack(i));
         }
-        return returnItems;
+        return merged;
     }
 
+    /**
+     * Placements can overlap, so every placement part covering the position is tried and the first
+     * one that actually stores a matching container there wins.
+     */
     @Nullable
-    private static ContainerStorage.PosInPlacement getPlacementBlock(BlockPos pos) {
-        List<SchematicPlacementManager.PlacementPart> parts = DataManager.getSchematicPlacementManager().getAllPlacementsTouchingChunk(pos);
+    private static SimpleInventory getItems(BlockPos worldPos, BlockState worldState,
+                                            @Nullable SchematicPlacement only) {
+        List<SchematicPlacementManager.PlacementPart> parts =
+                DataManager.getSchematicPlacementManager().getAllPlacementsTouchingChunk(worldPos);
 
         for (SchematicPlacementManager.PlacementPart part : parts) {
-            if (!part.getBox().containsPos(pos)) continue;
+            if (!part.getBox().containsPos(worldPos)) continue;
 
             SchematicPlacement placement = part.placement;
+            if (only != null && placement != only) continue;
             String region = part.subRegionName;
             LitematicaBlockStateContainer container = placement.getSchematic().getSubRegionContainer(region);
+            SubRegionPlacement subRegion = placement.getRelativeSubRegionPlacement(region);
+            if (container == null || subRegion == null) continue;
+
             BlockPos schematicPos = SchematicUtils.getSchematicContainerPositionFromWorldPosition(
-                    pos,
-                    placement.getSchematic(),
-                    region,
-                    placement,
-                    Objects.requireNonNull(
-                            placement.getRelativeSubRegionPlacement(region),
-                            "Somehow subregion is null"),
-                    container);
-            return new PosInPlacement(placement, region, schematicPos);
+                    worldPos, placement.getSchematic(), region, placement, subRegion, container);
+            if (schematicPos == null || !isInside(container, schematicPos)) continue;
+
+            BlockState schematicState = container.get(schematicPos.getX(), schematicPos.getY(), schematicPos.getZ());
+            // A different block in the schematic means the slot layouts wouldn't line up.
+            if (schematicState == null || schematicState.getBlock() != worldState.getBlock()) continue;
+
+            Map<BlockPos, NbtCompound> blockEntities = placement.getSchematic().getBlockEntityMapForRegion(region);
+            if (blockEntities == null) continue;
+            NbtCompound nbt = blockEntities.get(schematicPos);
+            if (nbt == null) continue;
+
+            SimpleInventory inventory = readInventory(schematicPos, schematicState, nbt);
+            if (inventory != null) {
+                return inventory;
+            }
         }
         return null;
     }
 
-    public record PosInPlacement(SchematicPlacement placement, String region, BlockPos pos) {
+    @Nullable
+    private static SimpleInventory readInventory(BlockPos pos, BlockState state, NbtCompound nbt) {
+        // Instantiated from the block rather than BlockEntity.createFromNbt, because not every
+        // schematic format keeps the "id" tag that createFromNbt requires.
+        if (!(state.getBlock() instanceof BlockEntityProvider provider)) {
+            return null;
+        }
+        BlockEntity blockEntity = provider.createBlockEntity(pos, state);
+        if (blockEntity == null) {
+            return null;
+        }
+        try {
+            blockEntity.readNbt(nbt);
+        } catch (Exception e) {
+            return null;
+        }
+        if (!(blockEntity instanceof Inventory schematicInv)) {
+            return null;
+        }
+
+        SimpleInventory inventory = new SimpleInventory(schematicInv.size());
+        for (int i = 0; i < schematicInv.size(); i++) {
+            inventory.setStack(i, schematicInv.getStack(i).copy());
+        }
+        return inventory;
+    }
+
+    private static boolean isInside(LitematicaBlockStateContainer container, BlockPos pos) {
+        Vec3i size = container.getSize();
+        return pos.getX() >= 0 && pos.getX() < size.getX()
+                && pos.getY() >= 0 && pos.getY() < size.getY()
+                && pos.getZ() >= 0 && pos.getZ() < size.getZ();
     }
 }
