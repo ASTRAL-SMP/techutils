@@ -35,11 +35,15 @@ public abstract class WidgetListSchematicVerificationResultsMixin extends Widget
 
     @Override
     protected boolean shouldRenderHoverStuff() {
-        return getSelectedInventoryMismatches().isEmpty();
+        return techutils$hoveredInventoryWidget() != null || getSelectedInventoryMismatches().isEmpty();
     }
 
     @Inject(method = "drawContents", at = @At("RETURN"))
     private void techutils$drawSelectedWrongInventory(MatrixStack matrixStack, int mouseX, int mouseY, float partialTicks, CallbackInfo ci) {
+        // The hovered entry wins over the selected ones, and is drawn by the regular hover pass.
+        if (techutils$hoveredInventoryWidget() != null) {
+            return;
+        }
         var selected = getSelectedInventoryMismatches();
         if (selected.isEmpty()) {
             return;
@@ -52,6 +56,18 @@ public abstract class WidgetListSchematicVerificationResultsMixin extends Widget
                 })
                 .max(Comparator.comparingInt(w -> selected.indexOf(w.getEntry().blockMismatch)))
                 .ifPresent(w -> w.postRenderHovered(mouseX, mouseY, true, matrixStack));
+    }
+
+    @Unique
+    @Nullable
+    private WidgetSchematicVerificationResult techutils$hoveredInventoryWidget() {
+        if (!(hoveredWidget instanceof WidgetSchematicVerificationResult widget)) {
+            return null;
+        }
+        BlockMismatchEntry entry = widget.getEntry();
+        return entry != null && entry.blockMismatch != null && entry.blockMismatch.mismatchType == WRONG_INVENTORIES
+                ? widget
+                : null;
     }
 
     @Unique

@@ -1,3 +1,7 @@
+# 0.3.1-astral.1 (1.19.4)
+
+- Inventory Verifier: the hovered entry's inventories are now shown while entries are selected. Previously selecting an entry pinned its overlay and hovering another one did nothing; the selection is still shown when the cursor is off the list.
+
 # 0.3.0-astral.1 (1.19.4)
 
 ASTRAL-SMP fork bringing the mod to Minecraft 1.19.4 and backporting features from the upstream 0.6.x line that don't rely on the 1.20.5+ data component system.
