@@ -102,6 +102,16 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
     @Unique
     private boolean queryAnswered = false;
 
+    // Listed containers are re-read on demand (opening the verifier screen), so filling one clears its
+    // entry without re-running the whole verification. The cooldown runs from the last answer, which
+    // also keeps the refresh it triggers from starting another round.
+    @Unique
+    private static final long RECHECK_COOLDOWN_MS = 2000;
+    @Unique
+    private boolean recheckInFlight = false;
+    @Unique
+    private long recheckedAt = 0;
+
     @Unique
     private record WrongInventory(BlockPos pos, BlockState expectedState, BlockState foundState,
                                   Inventory expected, Inventory found) {
@@ -242,16 +252,8 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
         if (nbt == null || nbt.isEmpty()) {
             return;
         }
-        BlockEntity queriedBE = worldBE.getType().instantiate(pos, state);
-        if (queriedBE == null) {
-            return;
-        }
-        try {
-            queriedBE.readNbt(nbt);
-        } catch (Exception e) {
-            return;
-        }
-        if (!(queriedBE instanceof Inventory found)) {
+        Inventory found = techutils$readInventory(worldBE, pos, state, nbt);
+        if (found == null) {
             return;
         }
 
@@ -260,34 +262,138 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
             return;
         }
 
+        if (techutils$inventoriesMatch(expected, found)) {
+            techutils$forget(pos);
+            return;
+        }
+
+        SimpleInventory foundSnapshot = techutils$snapshot(found);
+        techutils$forget(pos);
+        BlockState foundState = techutils$distinctState(state);
+        ItemUtilsAccessor.getItemsForStates().put(foundState, ItemUtils.getItemForBlock(worldClient, pos, state, true));
+        wrongInventoriesPositions.put(Pair.of(state, foundState), pos);
+        wrongInventories.put(pos, new WrongInventory(pos, state, foundState, expected, foundSnapshot));
+    }
+
+    /**
+     * Rebuilds a container's contents from queried NBT, using the block entity in the client world as
+     * the template for the type and size.
+     */
+    @Unique
+    @Nullable
+    private static Inventory techutils$readInventory(BlockEntity worldBE, BlockPos pos, BlockState state, NbtCompound nbt) {
+        BlockEntity copy = worldBE.getType().instantiate(pos, state);
+        if (copy == null) {
+            return null;
+        }
+        try {
+            copy.readNbt(nbt);
+        } catch (Exception e) {
+            return null;
+        }
+        return copy instanceof Inventory inventory ? inventory : null;
+    }
+
+    @Unique
+    private static boolean techutils$inventoriesMatch(Inventory expected, Inventory found) {
+        if (expected.size() != found.size()) {
+            return false;
+        }
         boolean verifyNbt = Configs.LitematicConfigs.VERIFY_ITEM_NBT.getBooleanValue();
-        boolean mismatch = false;
         for (int i = found.size() - 1; i >= 0; i--) {
             var expectedStack = expected.getStack(i);
             var foundStack = found.getStack(i);
             if (expectedStack.getItem() != foundStack.getItem()
                     || expectedStack.getCount() != foundStack.getCount()
                     || verifyNbt && !Objects.equals(expectedStack.getNbt(), foundStack.getNbt())) {
-                mismatch = true;
-                break;
+                return false;
             }
         }
-        if (!mismatch) {
-            techutils$forget(pos);
+        return true;
+    }
+
+    /**
+     * Copies the contents so later changes to the container don't alter the displayed diff.
+     */
+    @Unique
+    private static SimpleInventory techutils$snapshot(Inventory inventory) {
+        SimpleInventory copy = new SimpleInventory(inventory.size());
+        for (int i = 0; i < inventory.size(); i++) {
+            copy.setStack(i, inventory.getStack(i).copy());
+        }
+        return copy;
+    }
+
+    @Override
+    public void recheckWrongInventories$techutils(Runnable onChanged) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (wrongInventories.isEmpty() || recheckInFlight || queriesUnsupported || mc.world == null) {
+            return;
+        }
+        if (System.currentTimeMillis() - recheckedAt < RECHECK_COOLDOWN_MS) {
+            return;
+        }
+        recheckInFlight = true;
+        List<BlockPos> positions = new ArrayList<>(wrongInventories.keySet());
+
+        if (techutils$authoritativeWorld() instanceof ServerWorld serverWorld) {
+            serverWorld.getServer().execute(() -> {
+                Map<BlockPos, NbtCompound> snapshot = new HashMap<>();
+                for (BlockPos pos : positions) {
+                    if (serverWorld.getBlockEntity(pos) instanceof Inventory inventory) {
+                        snapshot.put(pos, ((BlockEntity) inventory).createNbtWithId());
+                    }
+                }
+                mc.execute(() -> techutils$applyRecheck(snapshot, onChanged));
+            });
+        } else {
+            int timeout = Configs.LitematicConfigs.QUERY_TIMEOUT.getIntegerValue();
+            GamerQueryHandler.queryBlocks(positions.toArray(new BlockPos[0]))
+                    .orTimeout(timeout, TimeUnit.SECONDS)
+                    .whenComplete((map, error) -> mc.execute(() ->
+                            techutils$applyRecheck(map == null ? Map.of() : map, onChanged)));
+        }
+    }
+
+    @Unique
+    private void techutils$applyRecheck(Map<BlockPos, NbtCompound> results, Runnable onChanged) {
+        recheckInFlight = false;
+        recheckedAt = System.currentTimeMillis();
+        ClientWorld world = MinecraftClient.getInstance().world;
+        if (world == null) {
             return;
         }
 
-        // Snapshot the found contents so later changes to the container don't alter the displayed diff.
-        SimpleInventory foundSnapshot = new SimpleInventory(found.size());
-        for (int i = 0; i < found.size(); i++) {
-            foundSnapshot.setStack(i, found.getStack(i).copy());
-        }
+        boolean changed = false;
+        for (Map.Entry<BlockPos, NbtCompound> result : results.entrySet()) {
+            BlockPos pos = result.getKey();
+            NbtCompound nbt = result.getValue();
+            WrongInventory entry = wrongInventories.get(pos);
+            if (entry == null || nbt == null || nbt.isEmpty()) {
+                continue;
+            }
+            BlockEntity worldBE = world.getBlockEntity(pos);
+            if (worldBE == null) {
+                continue;
+            }
+            Inventory found = techutils$readInventory(worldBE, pos, worldBE.getCachedState(), nbt);
+            if (found == null || found.size() != entry.expected().size()) {
+                continue;
+            }
 
-        techutils$forget(pos);
-        BlockState foundState = techutils$distinctState(state);
-        ItemUtilsAccessor.getItemsForStates().put(foundState, ItemUtils.getItemForBlock(worldClient, pos, state, true));
-        wrongInventoriesPositions.put(Pair.of(state, foundState), pos);
-        wrongInventories.put(pos, new WrongInventory(pos, state, foundState, expected, foundSnapshot));
+            foundNbtCache.put(pos, nbt);
+            if (techutils$inventoriesMatch(entry.expected(), found)) {
+                techutils$forget(pos);
+                changed = true;
+            } else if (!techutils$inventoriesMatch(entry.found(), found)) {
+                wrongInventories.put(pos, new WrongInventory(pos, entry.expectedState(), entry.foundState(),
+                        entry.expected(), techutils$snapshot(found)));
+                changed = true;
+            }
+        }
+        if (changed) {
+            onChanged.run();
+        }
     }
 
     /**
@@ -401,5 +507,7 @@ public abstract class SchematicVerifierMixin implements SchematicVerifierExtensi
         queriedChunks.clear();
         queriesUnsupported = false;
         queryAnswered = false;
+        recheckInFlight = false;
+        recheckedAt = 0;
     }
 }

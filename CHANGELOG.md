@@ -1,3 +1,8 @@
+# 0.3.2-astral (1.19.4)
+
+- Inventory Verifier: the preview now uses the container's own layout, so a hopper is drawn as a row of five slots instead of a single column. The layout is taken from the block, because the copied contents could only be classified as a horse inventory.
+- Inventory Verifier: the listed containers are re-read when the verifier screen is opened, so filling one clears its entry instead of keeping it until the whole verification is run again.
+
 # 0.3.1-astral (1.19.4)
 
 - Inventory Verifier: the hovered entry's inventories are now shown while entries are selected. Previously selecting an entry pinned its overlay and hovering another one did nothing; the selection is still shown when the cursor is off the list.

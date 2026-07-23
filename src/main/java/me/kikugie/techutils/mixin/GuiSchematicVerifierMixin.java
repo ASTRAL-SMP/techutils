@@ -9,6 +9,7 @@ import com.llamalad7.mixinextras.sugar.ref.LocalRef;
 import me.kikugie.techutils.feature.verifier.SchematicVerifierExtension;
 import fi.dy.masa.litematica.gui.GuiSchematicVerifier;
 import fi.dy.masa.litematica.schematic.verifier.SchematicVerifier;
+import fi.dy.masa.malilib.util.GuiUtils;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -28,6 +29,7 @@ import java.lang.reflect.Method;
 @Mixin(value = GuiSchematicVerifier.class, remap = false)
 public abstract class GuiSchematicVerifierMixin {
     @Shadow private static SchematicVerifier.MismatchType resultMode;
+    @Shadow @Final private SchematicVerifier verifier;
 
     @Unique
     private static final Enum<?> SET_RESULT_MODE_WRONG_INVENTORIES;
@@ -68,6 +70,21 @@ public abstract class GuiSchematicVerifierMixin {
     private void techutils$addWrongInventoriesButton(CallbackInfo ci, @Local(ordinal = 0) LocalIntRef x, @Local(ordinal = 1) int y) throws InvocationTargetException, IllegalAccessException {
         var res = (Integer) CREATE_BUTTON.invoke(this, x.get(), y, -1, SET_RESULT_MODE_WRONG_INVENTORIES);
         x.set(x.get() + res + 4);
+    }
+
+    /**
+     * Container contents are only read while a chunk is verified, so a container filled afterwards
+     * stays listed. Opening the screen re-reads the listed ones and rebuilds the list if any of them
+     * turned out to be correct by now.
+     */
+    @Inject(method = "initGui", at = @At("HEAD"))
+    private void techutils$recheckWrongInventories(CallbackInfo ci) {
+        GuiSchematicVerifier self = (GuiSchematicVerifier) (Object) this;
+        ((SchematicVerifierExtension) verifier).recheckWrongInventories$techutils(() -> {
+            if (GuiUtils.getCurrentScreen() == self) {
+                self.onTaskCompleted();
+            }
+        });
     }
 
     @ModifyExpressionValue(method = "createButton", at = @At(value = "INVOKE", target = "Lfi/dy/masa/litematica/gui/GuiSchematicVerifier$ButtonListener$Type;ordinal()I", ordinal = 0))
