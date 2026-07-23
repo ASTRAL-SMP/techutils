@@ -1,4 +1,4 @@
-# 0.3.1-astral.1 (1.19.4)
+# 0.3.1-astral (1.19.4)
 
 - Inventory Verifier: the hovered entry's inventories are now shown while entries are selected. Previously selecting an entry pinned its overlay and hovering another one did nothing; the selection is still shown when the cursor is off the list.
 
