@@ -3,8 +3,9 @@ package me.kikugie.techutils.feature.inverifier;
 import fi.dy.masa.litematica.data.DataManager;
 import fi.dy.masa.litematica.schematic.container.LitematicaBlockStateContainer;
 import fi.dy.masa.litematica.schematic.placement.SchematicPlacement;
-import fi.dy.masa.litematica.schematic.placement.SchematicPlacementManager;
 import fi.dy.masa.litematica.schematic.placement.SubRegionPlacement;
+import fi.dy.masa.litematica.selection.Box;
+import fi.dy.masa.litematica.util.PositionUtils;
 import fi.dy.masa.litematica.util.SchematicUtils;
 import net.minecraft.block.BlockEntityProvider;
 import net.minecraft.block.BlockState;
@@ -20,7 +21,6 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3i;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -98,44 +98,63 @@ public final class ContainerStorage {
     }
 
     /**
-     * Placements can overlap, so every placement part covering the position is tried and the first
-     * one that actually stores a matching container there wins.
+     * Placements can overlap, so every sub-region covering the position is tried and the first one
+     * that actually stores a matching container there wins.
+     * <p>
+     * The sub-region boxes are walked directly instead of going through
+     * {@code SchematicPlacementManager#getAllPlacementsTouchingChunk}: that map is the renderer's
+     * cache and only holds placements whose rendering is enabled, which would make the container
+     * contents disappear as soon as the schematic's rendering is toggled off.
      */
     @Nullable
     private static SimpleInventory getItems(BlockPos worldPos, BlockState worldState,
                                             @Nullable SchematicPlacement only) {
-        List<SchematicPlacementManager.PlacementPart> parts =
-                DataManager.getSchematicPlacementManager().getAllPlacementsTouchingChunk(worldPos);
-
-        for (SchematicPlacementManager.PlacementPart part : parts) {
-            if (!part.getBox().containsPos(worldPos)) continue;
-
-            SchematicPlacement placement = part.placement;
+        for (SchematicPlacement placement : DataManager.getSchematicPlacementManager().getAllSchematicsPlacements()) {
+            if (!placement.isEnabled()) continue;
             if (only != null && placement != only) continue;
-            String region = part.subRegionName;
-            LitematicaBlockStateContainer container = placement.getSchematic().getSubRegionContainer(region);
-            SubRegionPlacement subRegion = placement.getRelativeSubRegionPlacement(region);
-            if (container == null || subRegion == null) continue;
 
-            BlockPos schematicPos = SchematicUtils.getSchematicContainerPositionFromWorldPosition(
-                    worldPos, placement.getSchematic(), region, placement, subRegion, container);
-            if (schematicPos == null || !isInside(container, schematicPos)) continue;
+            for (Map.Entry<String, Box> entry :
+                    placement.getSubRegionBoxes(SubRegionPlacement.RequiredEnabled.PLACEMENT_ENABLED).entrySet()) {
+                if (!contains(entry.getValue(), worldPos)) continue;
 
-            BlockState schematicState = container.get(schematicPos.getX(), schematicPos.getY(), schematicPos.getZ());
-            // A different block in the schematic means the slot layouts wouldn't line up.
-            if (schematicState == null || schematicState.getBlock() != worldState.getBlock()) continue;
+                String region = entry.getKey();
+                LitematicaBlockStateContainer container = placement.getSchematic().getSubRegionContainer(region);
+                SubRegionPlacement subRegion = placement.getRelativeSubRegionPlacement(region);
+                if (container == null || subRegion == null) continue;
 
-            Map<BlockPos, NbtCompound> blockEntities = placement.getSchematic().getBlockEntityMapForRegion(region);
-            if (blockEntities == null) continue;
-            NbtCompound nbt = blockEntities.get(schematicPos);
-            if (nbt == null) continue;
+                BlockPos schematicPos = SchematicUtils.getSchematicContainerPositionFromWorldPosition(
+                        worldPos, placement.getSchematic(), region, placement, subRegion, container);
+                if (schematicPos == null || !isInside(container, schematicPos)) continue;
 
-            SimpleInventory inventory = readInventory(schematicPos, schematicState, nbt);
-            if (inventory != null) {
-                return inventory;
+                BlockState schematicState = container.get(schematicPos.getX(), schematicPos.getY(), schematicPos.getZ());
+                // A different block in the schematic means the slot layouts wouldn't line up.
+                if (schematicState == null || schematicState.getBlock() != worldState.getBlock()) continue;
+
+                Map<BlockPos, NbtCompound> blockEntities = placement.getSchematic().getBlockEntityMapForRegion(region);
+                if (blockEntities == null) continue;
+                NbtCompound nbt = blockEntities.get(schematicPos);
+                if (nbt == null) continue;
+
+                SimpleInventory inventory = readInventory(schematicPos, schematicState, nbt);
+                if (inventory != null) {
+                    return inventory;
+                }
             }
         }
         return null;
+    }
+
+    private static boolean contains(Box box, BlockPos pos) {
+        BlockPos pos1 = box.getPos1();
+        BlockPos pos2 = box.getPos2();
+        if (pos1 == null || pos2 == null) {
+            return false;
+        }
+        BlockPos min = PositionUtils.getMinCorner(pos1, pos2);
+        BlockPos max = PositionUtils.getMaxCorner(pos1, pos2);
+        return pos.getX() >= min.getX() && pos.getX() <= max.getX()
+                && pos.getY() >= min.getY() && pos.getY() <= max.getY()
+                && pos.getZ() >= min.getZ() && pos.getZ() <= max.getZ();
     }
 
     @Nullable

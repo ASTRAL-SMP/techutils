@@ -1,3 +1,7 @@
+# 0.3.3-astral (1.19.4)
+
+- Container overlay: the schematic's contents are shown again when the placement's rendering is turned off. The schematic side was looked up through Litematica's renderer chunk cache, which only lists placements that are being rendered, so the coloured slots silently disappeared. The Inventory Verifier read the expected contents the same way.
+
 # 0.3.2-astral (1.19.4)
 
 - Inventory Verifier: the preview now uses the container's own layout, so a hopper is drawn as a row of five slots instead of a single column. The layout is taken from the block, because the copied contents could only be classified as a horse inventory.
